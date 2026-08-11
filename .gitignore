@@ -1,0 +1,18 @@
+# Secrets - NEVER commit your API key
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.eggs/
+
+# Test recordings
+test_audio/
+*.wav.bak
+
+# OS
+.DS_Store
