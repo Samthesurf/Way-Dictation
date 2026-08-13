@@ -8,6 +8,7 @@
 test_audio/
 *.wav.bak
 test_network.sh
+test_release.sh
 
 # OS
 .DS_Store
