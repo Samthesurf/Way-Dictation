@@ -1,0 +1,13 @@
+# Secrets - NEVER commit your API key
+.env
+
+# Rust
+/target
+
+# Test recordings
+test_audio/
+*.wav.bak
+test_network.sh
+
+# OS
+.DS_Store
