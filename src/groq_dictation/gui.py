@@ -309,6 +309,14 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
             ):
                 self._dragging = True
                 self.setDown(False)  # leave the pressed visual, suppress click
+                # Wayland does not allow clients to position windows, so hand
+                # the drag to the compositor (xdg_toplevel::move). Returns
+                # False on platforms without support; fall back to manual
+                # delta moves below.
+                handle = self.window().windowHandle()
+                if handle is not None and handle.startSystemMove():
+                    event.accept()
+                    return
             if self._dragging:
                 self.dragBy.emit(cur.x() - self._last_global.x(),
                                  cur.y() - self._last_global.y())
@@ -1018,6 +1026,12 @@ class DictationWindow(QtWidgets.QWidget):
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            # Wayland: compositor-driven move (clients cannot self-position).
+            # Falls back to manual tracking where unsupported.
+            handle = self.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
             self._drag_offset = (event.globalPosition().toPoint()
                                  - self.frameGeometry().topLeft())
             event.accept()
