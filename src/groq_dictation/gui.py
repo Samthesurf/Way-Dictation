@@ -34,6 +34,7 @@ CONFIG_DIR = (
     / "groq-dictation"
 )
 CONFIG_FILE = CONFIG_DIR / "config.json"
+KEY_FILE = CONFIG_DIR / "keys.env"  # API keys saved from the settings dialog
 
 DEFAULT_SETTINGS = {
     "provider": "gpt-transcribe",
@@ -46,7 +47,6 @@ DEFAULT_SETTINGS = {
 # --- palette ---
 CARD_TOP = "#000000"
 CARD_BOTTOM = "#000000"
-PANEL = "#0d0e10"
 FIELD_BG = "#17191d"
 BORDER = "#343842"
 BORDER_HOVER = "#454b58"
@@ -87,11 +87,11 @@ LANGUAGES = [
 MIN_WAV_BYTES = 44 + 160  # below this there is no meaningful speech
 STATUS_MAX_W = 240
 TRANSCRIPT_MAX_W = 250
-FIELD_MAX_W = 178
 
 
 def _load_env() -> None:
-    """Load API keys from the project .env and the CWD .env (fallback)."""
+    """Load API keys: real env vars > saved keys > project .env > CWD .env."""
+    load_dotenv(KEY_FILE)  # keys saved from the settings dialog win over .env
     load_dotenv(PROJECT_ROOT / ".env")
     load_dotenv()
 
@@ -151,6 +151,40 @@ def _write_glyph_assets() -> tuple[str | None, str | None]:
     except OSError:
         return None, None
     return str(chevron), str(check)
+
+
+def _combo_language_value(combo: QtWidgets.QComboBox) -> str:
+    """Read the language combo: selected item's data, or the typed text."""
+    i = combo.currentIndex()
+    text = combo.currentText().strip()
+    if i >= 0 and text == combo.itemText(i):
+        return combo.itemData(i) or ""
+    return text
+
+
+def _eye_pixmap(open_: bool) -> QtGui.QPixmap:
+    """Small eye icon for the show/hide key toggles (no asset files)."""
+    pm = QtGui.QPixmap(24, 24)
+    pm.fill(QtCore.Qt.GlobalColor.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    pen = QtGui.QPen(QtGui.QColor("#8b93a5"), 1.8, QtCore.Qt.PenStyle.SolidLine,
+                     QtCore.Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+    eye = QtCore.QRectF(4, 8.5, 16, 10)
+    if open_:
+        p.drawEllipse(eye)
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor("#8b93a5"))
+        p.drawEllipse(QtCore.QPointF(12, 13.5), 3.0, 3.0)
+    else:
+        p.setOpacity(0.55)
+        p.drawEllipse(eye)
+        p.setOpacity(1.0)
+        p.drawLine(QtCore.QPointF(3.5, 14.5), QtCore.QPointF(20.5, 9.0))
+    p.end()
+    return pm
 
 
 class DictationWorker(QtCore.QThread):
@@ -532,7 +566,6 @@ class DictationWindow(QtWidgets.QWidget):
         self.setWindowIcon(self._make_icon())
 
         self._build_ui()
-        self._build_settings_panel()
         self._pos_save_timer = QtCore.QTimer(self)
         self._pos_save_timer.setSingleShot(True)
         self._pos_save_timer.setInterval(400)
@@ -590,7 +623,7 @@ class DictationWindow(QtWidgets.QWidget):
         header.setSpacing(0)
         self.gear_btn = IconButton("gear")
         self.gear_btn.setToolTip("Settings")
-        self.gear_btn.clicked.connect(self._toggle_settings)
+        self.gear_btn.clicked.connect(self._open_settings)
         header.addWidget(self.gear_btn)
         header.addStretch(1)
         title = QtWidgets.QLabel("DICTATION")
@@ -656,15 +689,6 @@ class DictationWindow(QtWidgets.QWidget):
         self.transcript_label.setMaximumWidth(TRANSCRIPT_MAX_W)
         lay.addWidget(self.transcript_label)
 
-        # settings panel (hidden)
-        self.settings_panel = QtWidgets.QFrame()
-        self.settings_panel.setObjectName("settingsPanel")
-        self.settings_panel.setMaximumHeight(0)
-        self._panel_layout = QtWidgets.QVBoxLayout(self.settings_panel)
-        self._panel_layout.setContentsMargins(10, 6, 10, 12)
-        self._panel_layout.setSpacing(7)
-        lay.addWidget(self.settings_panel)
-
         chevron_path, check_path = _write_glyph_assets()
         chevron_css = (
             f"QComboBox::down-arrow {{ image: url({chevron_path}); width: 13px; height: 13px; }}"
@@ -683,11 +707,9 @@ class DictationWindow(QtWidgets.QWidget):
                 border-radius: 22px;
                 border: 1px solid #1AFFFFFF;
             }}
-            QFrame#settingsPanel {{
-                background: {PANEL};
-                border-radius: 14px;
-                border: 1px solid #131518;
-            }}
+            QLabel#dialogTitle {{ color: {TEXT}; font-size: 15px; font-weight: 600; }}
+            QLabel#sectionLabel {{ color: {FAINT}; font-size: 10px; font-weight: 600; }}
+            QFrame#sep {{ background: #1AFFFFFF; max-height: 1px; border: none; }}
             QLabel#titleLabel {{ color: {DIM}; }}
             QLabel#statusLabel {{ color: {DIM}; }}
             QLabel#hintLabel {{ color: {FAINT}; font-size: 11px; }}
@@ -730,6 +752,19 @@ class DictationWindow(QtWidgets.QWidget):
                 background: {ACCENT}; border-color: {ACCENT};
             }}
             {check_css}
+            QPushButton#primaryBtn {{
+                background: {ACCENT}; color: #ffffff; border: none;
+                border-radius: 8px; padding: 8px 24px;
+                font-size: 12px; font-weight: 600;
+            }}
+            QPushButton#primaryBtn:hover {{ background: {ACCENT_HOVER}; }}
+            QPushButton#primaryBtn:pressed {{ background: {ACCENT_PRESSED}; }}
+            QPushButton#ghostBtn {{
+                background: transparent; color: {DIM};
+                border: 1px solid {BORDER}; border-radius: 8px;
+                padding: 8px 18px; font-size: 12px;
+            }}
+            QPushButton#ghostBtn:hover {{ color: {TEXT}; border-color: {BORDER_HOVER}; }}
             QToolTip {{
                 background: {FIELD_BG}; color: {TEXT};
                 border: 1px solid {BORDER}; border-radius: 6px;
@@ -738,118 +773,19 @@ class DictationWindow(QtWidgets.QWidget):
             """
         )
 
-    def _build_settings_panel(self) -> None:
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
-        self._panel_layout.addLayout(grid)
-
-        def field_label(text: str) -> QtWidgets.QLabel:
-            lab = QtWidgets.QLabel(text)
-            lab.setObjectName("fieldLabel")
-            return lab
-
-        self.provider_combo = QtWidgets.QComboBox()
-        for label, value in PROVIDERS:
-            self.provider_combo.addItem(label, value)
-        self.provider_combo.setToolTip("Transcription backend")
-        self.provider_combo.setMaximumWidth(FIELD_MAX_W)
-        idx = self.provider_combo.findData(self.settings["provider"])
-        self.provider_combo.setCurrentIndex(max(idx, 0))
-        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        grid.addWidget(field_label("Provider"), 0, 0)
-        grid.addWidget(self.provider_combo, 0, 1)
-
-        self.language_combo = QtWidgets.QComboBox()
-        self.language_combo.setEditable(True)
-        self.language_combo.setMaximumWidth(FIELD_MAX_W)
-        self.language_combo.lineEdit().setPlaceholderText("Auto-detect")
-        self.language_combo.setToolTip("Language code (e.g. en, ig, fr)")
-        for label, value in LANGUAGES:
-            self.language_combo.addItem(label, value)
-        if self.settings["language"]:
-            i = self.language_combo.findData(self.settings["language"])
-            if i >= 0:
-                self.language_combo.setCurrentIndex(i)
-            else:
-                self.language_combo.setEditText(self.settings["language"])
-        self.language_combo.activated.connect(self._on_language_changed)
-        self.language_combo.lineEdit().editingFinished.connect(self._on_language_changed)
-        grid.addWidget(field_label("Language"), 1, 0)
-        grid.addWidget(self.language_combo, 1, 1)
-
-        self.model_edit = QtWidgets.QLineEdit()
-        self.model_edit.setPlaceholderText("Provider default")
-        self.model_edit.setMaximumWidth(FIELD_MAX_W)
-        self.model_edit.setText(self.settings["model"])
-        self.model_edit.setToolTip("Override the model ID")
-        self.model_edit.editingFinished.connect(self._on_model_changed)
-        grid.addWidget(field_label("Model"), 2, 0)
-        grid.addWidget(self.model_edit, 2, 1)
-
-        self.ontop_check = QtWidgets.QCheckBox("Always on top")
-        self.ontop_check.setChecked(bool(self.settings.get("always_on_top", True)))
-        self.ontop_check.toggled.connect(self._on_ontop_changed)
-        grid.addWidget(self.ontop_check, 3, 0, 1, 2)
-
-        note = QtWidgets.QLabel("Provider and language apply on the next play.")
-        note.setObjectName("hintLabel")
-        note.setWordWrap(True)
-        self._panel_layout.addWidget(note)
-
     # --------------------------------------------------------------- settings
 
     def _save(self) -> None:
         save_settings(self.settings)
 
-    def _on_provider_changed(self) -> None:
-        self.settings["provider"] = self.provider_combo.currentData()
-        self._save()
-
-    def _on_language_changed(self) -> None:
-        i = self.language_combo.currentIndex()
-        text = self.language_combo.currentText().strip()
-        if i >= 0 and text == self.language_combo.itemText(i):
-            lang = self.language_combo.itemData(i) or ""
-        else:
-            lang = text
-        self.settings["language"] = lang
-        self._save()
-
-    def _on_model_changed(self) -> None:
-        self.settings["model"] = self.model_edit.text().strip()
-        self._save()
-
-    def _on_ontop_changed(self, on: bool) -> None:
-        self.settings["always_on_top"] = on
-        self._save()
+    def apply_ontop(self, on: bool) -> None:
         flag = QtCore.Qt.WindowType.WindowStaysOnTopHint
         if bool(self.windowFlags() & flag) != on:
             self.setWindowFlag(flag, on)
             self.show()
 
-    def _toggle_settings(self) -> None:
-        if self.settings_panel.maximumHeight() == 0:
-            self._animate_panel(True)
-        else:
-            self._animate_panel(False)
-
-    def _animate_panel(self, open_: bool) -> None:
-        if hasattr(self, "_panel_anim") and self._panel_anim is not None:
-            self._panel_anim.stop()
-        target = self.settings_panel.sizeHint().height() if open_ else 0
-        if open_:
-            self.settings_panel.setVisible(True)
-        self._panel_anim = QtCore.QVariantAnimation(self)
-        self._panel_anim.setDuration(200)
-        self._panel_anim.setStartValue(self.settings_panel.maximumHeight())
-        self._panel_anim.setEndValue(target)
-        self._panel_anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-        self._panel_anim.valueChanged.connect(
-            lambda v: self.settings_panel.setMaximumHeight(int(v)))
-        self._panel_anim.finished.connect(
-            lambda: self.settings_panel.setVisible(open_))
-        self._panel_anim.start()
+    def _open_settings(self) -> None:
+        SettingsDialog(self).exec()
 
     # ----------------------------------------------------------------- states
 
@@ -1052,6 +988,246 @@ class DictationWindow(QtWidgets.QWidget):
         self.settings["pos"] = [self.x(), self.y()]
         save_settings(self.settings)
         event.accept()
+
+
+class SettingsDialog(QtWidgets.QDialog):
+    """Larger settings dialog: API keys, provider, language, model, window."""
+
+    def __init__(self, parent: DictationWindow):
+        super().__init__(parent)
+        self._win = parent
+        self._draft = dict(parent.settings)
+        self._key_fields: dict[str, QtWidgets.QLineEdit] = {}
+        self._drag_offset: QtCore.QPoint | None = None
+
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Dialog
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setWindowTitle("Groq Dictation - Settings")
+        self._build()
+
+    # ------------------------------------------------------------------ build
+    def _build(self) -> None:
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(26, 26, 26, 26)
+        outer.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
+
+        card = QtWidgets.QFrame()
+        card.setObjectName("card")
+        shadow = QtWidgets.QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QtGui.QColor(0, 0, 0, 160))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        lay = QtWidgets.QVBoxLayout(card)
+        lay.setContentsMargins(22, 16, 22, 20)
+        lay.setSpacing(10)
+
+        # header
+        header = QtWidgets.QHBoxLayout()
+        header.setSpacing(0)
+        title = QtWidgets.QLabel("Settings")
+        title.setObjectName("dialogTitle")
+        title.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        header.addWidget(title)
+        header.addStretch(1)
+        close_btn = IconButton("close")
+        close_btn.setToolTip("Close")
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(close_btn)
+        lay.addLayout(header)
+        lay.addSpacing(2)
+
+        def section(text: str) -> None:
+            lab = QtWidgets.QLabel(text)
+            lab.setObjectName("sectionLabel")
+            lab.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            f = lab.font()
+            f.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, 1.6)
+            lab.setFont(f)
+            lay.addWidget(lab)
+            sep = QtWidgets.QFrame()
+            sep.setObjectName("sep")
+            lay.addWidget(sep)
+
+        def field_label(text: str) -> QtWidgets.QLabel:
+            lab = QtWidgets.QLabel(text)
+            lab.setObjectName("fieldLabel")
+            return lab
+
+        # --- API keys
+        section("API KEYS")
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
+        for row, (label, env_name) in enumerate((
+            ("Groq API key", "GROQ_API_KEY"),
+            ("OpenRouter API key", "OPENROUTER_API_KEY"),
+        )):
+            field = QtWidgets.QLineEdit()
+            field.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+            field.setPlaceholderText("Not set")
+            field.setText(os.environ.get(env_name, ""))
+            field.setMinimumWidth(250)
+            eye = field.addAction(
+                QtGui.QIcon(_eye_pixmap(False)),
+                QtWidgets.QLineEdit.ActionPosition.TrailingPosition,
+            )
+            eye.setToolTip("Show / hide")
+            eye.triggered.connect(
+                lambda _=False, f=field, a=eye: self._toggle_echo(f, a))
+            self._key_fields[env_name] = field
+            grid.addWidget(field_label(label), row, 0)
+            grid.addWidget(field, row, 1)
+        lay.addLayout(grid)
+        key_note = QtWidgets.QLabel(
+            "Keys are saved to ~/.config/groq-dictation/keys.env and take "
+            "priority over the .env file.")
+        key_note.setObjectName("hintLabel")
+        key_note.setWordWrap(True)
+        lay.addWidget(key_note)
+        lay.addSpacing(4)
+
+        # --- engine
+        section("ENGINE")
+        grid2 = QtWidgets.QGridLayout()
+        grid2.setHorizontalSpacing(12)
+        grid2.setVerticalSpacing(8)
+        grid2.setColumnStretch(1, 1)
+
+        self.provider_combo = QtWidgets.QComboBox()
+        for label, value in PROVIDERS:
+            self.provider_combo.addItem(label, value)
+        self.provider_combo.setMinimumWidth(250)
+        idx = self.provider_combo.findData(self._draft["provider"])
+        self.provider_combo.setCurrentIndex(max(idx, 0))
+        grid2.addWidget(field_label("Provider"), 0, 0)
+        grid2.addWidget(self.provider_combo, 0, 1)
+
+        self.language_combo = QtWidgets.QComboBox()
+        self.language_combo.setEditable(True)
+        self.language_combo.setMinimumWidth(250)
+        self.language_combo.lineEdit().setPlaceholderText("Auto-detect")
+        for label, value in LANGUAGES:
+            self.language_combo.addItem(label, value)
+        if self._draft["language"]:
+            i = self.language_combo.findData(self._draft["language"])
+            if i >= 0:
+                self.language_combo.setCurrentIndex(i)
+            else:
+                self.language_combo.setEditText(self._draft["language"])
+        grid2.addWidget(field_label("Language"), 1, 0)
+        grid2.addWidget(self.language_combo, 1, 1)
+
+        self.model_edit = QtWidgets.QLineEdit()
+        self.model_edit.setPlaceholderText("Provider default")
+        self.model_edit.setMinimumWidth(250)
+        self.model_edit.setText(self._draft["model"])
+        grid2.addWidget(field_label("Model"), 2, 0)
+        grid2.addWidget(self.model_edit, 2, 1)
+
+        self.ontop_check = QtWidgets.QCheckBox("Always on top")
+        self.ontop_check.setChecked(bool(self._draft.get("always_on_top", True)))
+        grid2.addWidget(self.ontop_check, 3, 0, 1, 2)
+        lay.addLayout(grid2)
+        prov_note = QtWidgets.QLabel(
+            "GPT Transcribe and Gemini use the OpenRouter key; "
+            "Groq Whisper uses the Groq key.")
+        prov_note.setObjectName("hintLabel")
+        prov_note.setWordWrap(True)
+        lay.addWidget(prov_note)
+        lay.addSpacing(4)
+
+        # --- footer
+        note = QtWidgets.QLabel("Changes apply the next time you press play.")
+        note.setObjectName("hintLabel")
+        lay.addWidget(note)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QtWidgets.QPushButton("Cancel")
+        cancel.setObjectName("ghostBtn")
+        cancel.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QtWidgets.QPushButton("Save")
+        save.setObjectName("primaryBtn")
+        save.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        save.setDefault(True)
+        save.clicked.connect(self._on_save)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        self.adjustSize()
+        screen = (QtGui.QGuiApplication.screenAt(self._win.frameGeometry().center())
+                  or QtGui.QGuiApplication.primaryScreen())
+        geo = screen.availableGeometry()
+        self.move(geo.center().x() - self.width() // 2,
+                  geo.center().y() - self.height() // 2)
+
+    # ------------------------------------------------------------------ logic
+    def _toggle_echo(self, field: QtWidgets.QLineEdit,
+                     action: QtGui.QAction) -> None:
+        if field.echoMode() == QtWidgets.QLineEdit.EchoMode.Password:
+            field.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal)
+            action.setIcon(QtGui.QIcon(_eye_pixmap(True)))
+        else:
+            field.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+            action.setIcon(QtGui.QIcon(_eye_pixmap(False)))
+
+    def _on_save(self) -> None:
+        self._draft["provider"] = self.provider_combo.currentData()
+        self._draft["language"] = _combo_language_value(self.language_combo)
+        self._draft["model"] = self.model_edit.text().strip()
+        self._draft["always_on_top"] = self.ontop_check.isChecked()
+        self._win.settings.update(self._draft)
+        save_settings(self._win.settings)
+        self._save_keys()
+        self._win.apply_ontop(self._draft["always_on_top"])
+        self.accept()
+
+    def _save_keys(self) -> None:
+        keys = {name: f.text().strip() for name, f in self._key_fields.items()}
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            lines = "".join(f"{k}={v}\n" for k, v in keys.items() if v)
+            fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(lines)
+        except OSError as e:
+            log.warning("Could not save API keys: %s", e)
+        for name, value in keys.items():
+            if value:
+                os.environ[name] = value
+            else:
+                os.environ.pop(name, None)
+
+    # ---------------------------------------------------------------- events
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            handle = self.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
+            self._drag_offset = (event.globalPosition().toPoint()
+                                 - self.frameGeometry().topLeft())
+            event.accept()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        if self._drag_offset is not None and (
+            event.buttons() & QtCore.Qt.MouseButton.LeftButton
+        ):
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        self._drag_offset = None
 
 
 def main(argv: list[str] | None = None) -> int:

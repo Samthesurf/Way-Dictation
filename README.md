@@ -214,11 +214,21 @@ groq-dictation-gui
 | Play button | Starts the dictation loop (record -> transcribe -> inject) |
 | Pause (same button) | Stops listening between phrases; aborts the in-progress phrase |
 | X | Stops everything and quits |
-| Gear | Provider (gpt-transcribe / groq / gemini), language, model override, always-on-top |
+| Gear | Opens the settings dialog (API keys, provider, language, model, always-on-top) |
 
-- Same `.env` keys as the CLI; provider and language apply on the next play.
+The settings dialog (gear button):
+
+- **API keys**: enter your Groq and OpenRouter keys directly in the UI.
+  They are saved masked to `~/.config/groq-dictation/keys.env` (0600) and
+  take priority over the `.env` file; real environment variables still win.
+  Each field has an eye toggle to reveal the key.
+- **Engine**: provider (gpt-transcribe / groq / gemini), language code,
+  and optional model override. GPT Transcribe and Gemini use the OpenRouter
+  key; Groq Whisper uses the Groq key.
+- **Window**: always-on-top toggle.
+
 - Settings persist to `~/.config/groq-dictation/config.json`; window position
-  is remembered.
+  is remembered. Engine changes apply on the next play.
 - While listening, pulse rings animate around the button; the last injected
   phrase is previewed under the status.
 - Errors surface in the widget: missing API key, mic failure, transcription
