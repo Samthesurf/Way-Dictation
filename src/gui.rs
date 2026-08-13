@@ -48,7 +48,6 @@ const RED: Color = Color::from_rgb(1.0, 0.37, 0.42);
 const FIELD_BG: Color = Color::from_rgb(0.09, 0.10, 0.11);
 const BORDER: Color = Color::from_rgb(0.20, 0.22, 0.26);
 const BORDER_HOVER: Color = Color::from_rgb(0.27, 0.30, 0.35);
-const BORDER_FOCUS: Color = Color::from_rgb(0.30, 0.33, 0.40);
 
 // --- geometry (mirrors the Python widget) ---
 const CARD_W: f32 = 342.0 - 52.0;
@@ -941,8 +940,9 @@ impl WayDictationApp {
     }
 
     fn settings_content(&self) -> Element<'_, Message> {
-        // The window itself is decorated, so the titlebar X closes it; no
-        // in-content close button needed.
+        // Mirrors the Python dialog: labels sit left of their fields, every
+        // control shares one dark field style with rounded 8px borders, and
+        // the app's green is the only accent.
         let header = text("Settings")
             .size(15)
             .font(Font {
@@ -951,7 +951,7 @@ impl WayDictationApp {
             })
             .color(TEXT_C);
 
-        let groq_row = row![
+        let groq_field = row![
             text_input("Not set", &self.key_groq)
                 .on_input(Message::KeyGroq)
                 .secure(!self.reveal_groq)
@@ -960,10 +960,10 @@ impl WayDictationApp {
                 .style(field_style),
             eye_button(self.reveal_groq, Message::ToggleRevealGroq),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Center);
 
-        let or_row = row![
+        let or_field = row![
             text_input("Not set", &self.key_openrouter)
                 .on_input(Message::KeyOpenrouter)
                 .secure(!self.reveal_openrouter)
@@ -972,33 +972,46 @@ impl WayDictationApp {
                 .style(field_style),
             eye_button(self.reveal_openrouter, Message::ToggleRevealOpenrouter),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Center);
 
-        let provider_row = pick_list(&PROVIDERS[..], Some(self.draft_provider), Message::DraftProvider)
+        let provider_field = pick_list(&PROVIDERS[..], Some(self.draft_provider), Message::DraftProvider)
             .width(Fill)
-            .text_size(13);
+            .text_size(13)
+            .padding(8)
+            .style(picklist_style)
+            .menu_style(menu_style);
 
-        let language_row =
+        let language_field =
             pick_list(&LANGUAGE_OPTS[..], Some(self.draft_language), Message::DraftLanguage)
                 .width(Fill)
-                .text_size(13);
+                .text_size(13)
+                .padding(8)
+                .style(picklist_style)
+                .menu_style(menu_style);
 
-        let model_input = text_input("Provider default", &self.draft_model)
+        let model_field = text_input("Provider default", &self.draft_model)
             .on_input(Message::DraftModel)
             .padding(8)
             .width(Fill)
             .style(field_style);
 
-        let ontop_row = checkbox(self.draft_ontop)
+        let ontop_field = checkbox(self.draft_ontop)
             .label("Always on top")
             .on_toggle(Message::DraftOntop)
-            .text_size(13);
+            .text_size(12)
+            .style(checkbox_style);
 
-        let note = text(
-            "Keys are saved to ~/.config/way-dictation/keys.env and take priority over the .env \
-             file. GPT Transcribe and Gemini use the OpenRouter key; Groq Whisper uses the Groq \
-             key. Changes apply the next time you press play.",
+        let keys_note = text(
+            "Keys are saved to ~/.config/way-dictation/keys.env and take priority over the .env file.",
+        )
+        .size(11)
+        .color(FAINT)
+        .width(Fill);
+
+        let engine_note = text(
+            "GPT Transcribe and Gemini use the OpenRouter key; Groq Whisper uses the Groq key. \
+             Changes apply the next time you press play.",
         )
         .size(11)
         .color(FAINT)
@@ -1013,27 +1026,31 @@ impl WayDictationApp {
             .align_y(Center),
         )
         .width(Fill)
+        .padding(Padding {
+            top: 10.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
         .align_x(Alignment::End);
 
         let fields = column![
-            section_label("GROQ API KEY"),
-            groq_row,
-            section_label("OPENROUTER API KEY"),
-            or_row,
-            section_label("PROVIDER"),
-            provider_row,
-            section_label("LANGUAGE"),
-            language_row,
-            section_label("MODEL"),
-            model_input,
-            ontop_row,
-            note,
+            section_label("API KEYS"),
+            label_row("Groq API key", groq_field),
+            label_row("OpenRouter API key", or_field),
+            keys_note,
+            section_label("ENGINE"),
+            label_row("Provider", provider_field),
+            label_row("Language", language_field),
+            label_row("Model", model_field),
+            label_row("", ontop_field),
+            engine_note,
             buttons,
         ]
-        .spacing(6)
+        .spacing(7)
         .width(Fill);
 
-        let body = column![header, fields].spacing(12);
+        let body = column![header, fields].spacing(10);
 
         container(body).width(Fill).height(Fill).into()
     }
@@ -1095,13 +1112,17 @@ fn eye_button<'a>(open: bool, msg: Message) -> Element<'a, Message> {
         .into()
 }
 
-/// Primary (green) or ghost (outlined) settings button.
+/// Primary (green) or ghost (outlined) settings button. Sized by its text
+/// and padding so the label is always optically centered.
 fn settings_button<'a>(label: &'a str, primary: bool, msg: Message) -> Element<'a, Message> {
     button(text(label).size(13).color(if primary { Color::WHITE } else { DIM }))
         .on_press(msg)
-        .padding(0)
-        .width(78)
-        .height(33)
+        .padding(Padding {
+            top: 8.0,
+            right: 20.0,
+            bottom: 8.0,
+            left: 20.0,
+        })
         .style(move |_t, s| {
             if primary {
                 let (top, bottom) = match s {
@@ -1148,6 +1169,17 @@ fn settings_button<'a>(label: &'a str, primary: bool, msg: Message) -> Element<'
         .into()
 }
 
+/// A settings row: label on the left, vertically centered against its field.
+fn label_row<'a>(label: &'a str, field: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    row![
+        text(label).size(12).color(DIM).width(118),
+        container(field).width(Fill).align_y(Center),
+    ]
+    .spacing(10)
+    .align_y(Center)
+    .into()
+}
+
 fn section_label(label: &str) -> Element<'_, Message> {
     container(text(label).size(11).color(FAINT))
         .padding(Padding {
@@ -1161,7 +1193,7 @@ fn section_label(label: &str) -> Element<'_, Message> {
 
 fn field_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let border_color = match status {
-        text_input::Status::Focused { .. } => BORDER_FOCUS,
+        text_input::Status::Focused { .. } => ACCENT,
         text_input::Status::Hovered => BORDER_HOVER,
         _ => BORDER,
     };
@@ -1176,6 +1208,71 @@ fn field_style(_theme: &Theme, status: text_input::Status) -> text_input::Style 
         placeholder: FAINT,
         value: TEXT_C,
         selection: Color::from_rgba(0.41, 0.62, 0.39, 0.35),
+    }
+}
+
+/// Pick lists share the exact field style of the text inputs (same dark
+/// background, 8px radius, green focus border) so the dialog reads as one
+/// design instead of mixing framework defaults.
+fn picklist_style(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let border_color = match status {
+        pick_list::Status::Opened { .. } => ACCENT,
+        pick_list::Status::Hovered => BORDER_HOVER,
+        _ => BORDER,
+    };
+    pick_list::Style {
+        text_color: TEXT_C,
+        placeholder_color: FAINT,
+        handle_color: Color::from_rgb(0.62, 0.66, 0.74),
+        background: Background::Color(FIELD_BG),
+        border: Border {
+            radius: 8.0.into(),
+            width: 1.0,
+            color: border_color,
+        },
+    }
+}
+
+/// Dropdown menu: dark panel with the app's green as the selection accent.
+fn menu_style(_theme: &Theme) -> iced::overlay::menu::Style {
+    iced::overlay::menu::Style {
+        background: Background::Color(Color::from_rgb(0.13, 0.14, 0.17)),
+        border: Border {
+            radius: 8.0.into(),
+            width: 1.0,
+            color: BORDER_HOVER,
+        },
+        text_color: TEXT_C,
+        selected_text_color: Color::WHITE,
+        selected_background: Background::Color(ACCENT),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 18.0,
+        },
+    }
+}
+
+/// Checkbox: dark field box, green fill and white tick when checked.
+fn checkbox_style(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let checked = match status {
+        checkbox::Status::Active { is_checked } => is_checked,
+        checkbox::Status::Hovered { is_checked } => is_checked,
+        checkbox::Status::Disabled { is_checked } => is_checked,
+    };
+    checkbox::Style {
+        background: if checked {
+            Background::Color(ACCENT)
+        } else {
+            Background::Color(FIELD_BG)
+        },
+        icon_color: Color::WHITE,
+        border: Border {
+            radius: 4.0.into(),
+            width: 1.0,
+            color: if checked { ACCENT } else { BORDER },
+        },
+        text_color: Some(TEXT_C),
     }
 }
 
@@ -1621,10 +1718,12 @@ impl WinitProgram for GuiProgram {
 
 fn settings_window() -> window::Settings {
     window::Settings {
-        size: Size::new(380.0, 560.0),
+        size: Size::new(380.0, 600.0),
         position: Position::Centered,
         decorations: true,
-        transparent: true,
+        // opaque: a decorated dialog must never let the widget behind it
+        // bleed through, which transparent surfaces can on some compositors
+        transparent: false,
         resizable: false,
         level: Level::AlwaysOnTop,
         icon: Some(make_icon()),
