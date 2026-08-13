@@ -14,15 +14,13 @@ import json
 import logging
 import os
 import sys
-import threading
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .app import DictationApp
-from .audio import VADConfig, record_phrase
+from .app import DictationApp, DictationPipeline
+from .audio import VADConfig
 from .client import build_transcriber
 from .injector import Injector
 
@@ -84,10 +82,8 @@ LANGUAGES = [
     ("Chinese", "zh"),
 ]
 
-MIN_WAV_BYTES = 44 + 160  # below this there is no meaningful speech
 STATUS_MAX_W = 240
 TRANSCRIPT_MAX_W = 250
-
 
 def _load_env() -> None:
     """Load API keys: real env vars > saved keys > project .env > CWD .env."""
@@ -188,7 +184,13 @@ def _eye_pixmap(open_: bool) -> QtGui.QPixmap:
 
 
 class DictationWorker(QtCore.QThread):
-    """Runs the capture -> transcribe -> inject loop off the GUI thread."""
+    """Runs the capture + transcribe pipeline off the GUI thread.
+
+    Recording and transcription run concurrently (see DictationPipeline):
+    a recorder thread captures phrases into a bounded queue while a consumer
+    thread transcribes and injects them, so speech spoken during a cloud
+    round-trip is still captured.
+    """
 
     statusChanged = QtCore.Signal(str)  # "listening" | "transcribing" | "paused"
     phraseDone = QtCore.Signal(str, float)  # text, latency_ms
@@ -197,62 +199,32 @@ class DictationWorker(QtCore.QThread):
     def __init__(self, app: DictationApp, parent: QtCore.QObject | None = None):
         super().__init__(parent)
         self.app = app
-        self._pause = threading.Event()
-        self._stop = threading.Event()
-        self._cancel = threading.Event()
+        self._pipeline = DictationPipeline(
+            transcriber=app.transcriber,
+            injector=app.injector,
+            vad=app.vad,
+            language=app.language,
+            on_status=self.statusChanged.emit,
+            on_phrase=self.phraseDone.emit,
+            on_error=self.errorOccurred.emit,
+        )
 
     # -- control (callable from the GUI thread) --
     def pause(self) -> None:
-        self._pause.set()
-        self._cancel.set()  # abort an in-flight recording promptly
+        self._pipeline.pause()
 
     def resume(self) -> None:
-        self._pause.clear()
+        self._pipeline.resume()
 
     def stop(self) -> None:
-        self._stop.set()
-        self._cancel.set()
+        self._pipeline.stop()
 
     def is_paused(self) -> bool:
-        return self._pause.is_set()
+        return self._pipeline.is_paused()
 
     def run(self) -> None:  # noqa: D102
-        vad = self.app.vad
-        transcriber = self.app.transcriber
-        while not self._stop.is_set():
-            if self._pause.is_set():
-                self.statusChanged.emit("paused")
-                while self._pause.is_set() and not self._stop.is_set():
-                    time.sleep(0.05)
-                continue
-            self.statusChanged.emit("listening")
-            try:
-                wav, _dur = record_phrase(vad, cancel_event=self._cancel)
-            except Exception as e:  # noqa: BLE001 - mic errors are fatal here
-                self.errorOccurred.emit(f"Microphone error: {e}", True)
-                break
-            if self._cancel.is_set():
-                self._cancel.clear()
-                continue
-            if not wav or len(wav) < MIN_WAV_BYTES:
-                continue  # no speech detected, keep listening
-            self.statusChanged.emit("transcribing")
-            t0 = time.time()
-            try:
-                text = transcriber.transcribe(wav, language=self.app.language)
-            except Exception as e:  # noqa: BLE001 - retry next phrase
-                self.errorOccurred.emit(f"Transcription error: {e}", False)
-                log.error("Transcription error: %s", e)
-                continue
-            latency = (time.time() - t0) * 1000
-            log.info("Transcribed in %.0fms: %r", latency, text)
-            if text:
-                try:
-                    self.app.injector.type_text(text)
-                except Exception as e:  # noqa: BLE001
-                    self.errorOccurred.emit(f"Injection error: {e}", False)
-                else:
-                    self.phraseDone.emit(text, latency)
+        self._pipeline.start()
+        self._pipeline.wait()
 
 
 class PulseRing(QtWidgets.QWidget):
@@ -845,7 +817,20 @@ class DictationWindow(QtWidgets.QWidget):
             f"color: {FAINT}; font-size: 11px; font-style: italic;")
 
     def _on_worker_status(self, status: str) -> None:
-        self._set_state(status if status in ("listening", "transcribing", "paused") else "listening")
+        # With the pipelined worker, recording and transcribing happen at
+        # the same time, so the status line stays "Listening..." and
+        # transcribing is a transient hint instead of a flapping state.
+        if status == "paused":
+            if self._state == "listening":
+                self._set_state("paused")
+        elif status == "transcribing":
+            if self._state == "listening":
+                self._set_state("listening", hint="Sending audio to the cloud")
+        elif status == "listening":
+            if self._state == "listening":
+                self._set_state("listening")
+            elif self._state == "ready":
+                self._set_state("listening")
 
     def _on_phrase(self, text: str, latency: float) -> None:
         self._show_transcript(text, TEXT, 2200)
