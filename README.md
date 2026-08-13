@@ -74,7 +74,7 @@ Modules (`src/`):
 | `injector.rs` | Auto-detects text injection method for Wayland/X11 |
 | `app.rs` | `DictationApp` orchestration (capture -> transcribe -> inject) |
 | `main.rs` | `way-dictate` CLI entry point |
-| `gui.rs` | `way-dictation-gui` floating desktop widget (egui/eframe) |
+| `gui.rs` | `way-dictation-gui` floating desktop widget (iced) |
 
 ---
 
@@ -216,8 +216,9 @@ cargo build --release --features gui
 
 - API keys saved to `~/.config/way-dictation/keys.env` (0600), which take
   priority over the `.env` file; real environment variables still win.
-- Settings persist to `~/.config/way-dictation/config.json`; window position is
-  not yet remembered in this rewrite.
+- Settings persist to `~/.config/way-dictation/config.json`; the window
+  position is remembered and restored on the next launch (compositors that
+  forbid client positioning, like Wayland, ignore the restore silently).
 - While listening, pulse rings animate around the button; the last injected
   phrase is previewed under the status.
 
