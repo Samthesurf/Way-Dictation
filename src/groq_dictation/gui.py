@@ -242,6 +242,7 @@ class DictationWorker(QtCore.QThread):
                 text = transcriber.transcribe(wav, language=self.app.language)
             except Exception as e:  # noqa: BLE001 - retry next phrase
                 self.errorOccurred.emit(f"Transcription error: {e}", False)
+                log.error("Transcription error: %s", e)
                 continue
             latency = (time.time() - t0) * 1000
             log.info("Transcribed in %.0fms: %r", latency, text)

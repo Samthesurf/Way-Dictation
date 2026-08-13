@@ -18,6 +18,7 @@ import io
 import os
 import subprocess
 import tempfile
+import time
 import wave
 
 import httpx
@@ -198,6 +199,14 @@ class GeminiTranscriber:
         self.max_chunk_ms = max_chunk_ms
 
     def _transcribe_audio(self, audio: bytes, fmt: str, language: str | None) -> str:
+        debug_dir = os.environ.get("GROQ_DICTATION_DEBUG_DIR")
+        if debug_dir:
+            try:
+                from pathlib import Path
+                Path(debug_dir).mkdir(parents=True, exist_ok=True)
+                Path(debug_dir, f"req_{int(time.time() * 1000)}.{fmt}").write_bytes(audio)
+            except OSError:
+                pass
         b64 = base64.b64encode(audio).decode("ascii")
         content: list[dict] = [
             {"type": "text", "text": _TRANSCRIBE_SYSTEM},
@@ -217,7 +226,13 @@ class GeminiTranscriber:
                 json=payload,
                 headers=headers,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(
+                    f"OpenRouter chat HTTP {e.response.status_code}: "
+                    f"{e.response.text[:400]}"
+                ) from e
             data = resp.json()
         try:
             text = data["choices"][0]["message"]["content"]
@@ -282,6 +297,14 @@ class OpenRouterSttTranscriber:
         self.max_chunk_ms = max_chunk_ms
 
     def _transcribe_audio(self, audio: bytes, fmt: str, language: str | None) -> str:
+        debug_dir = os.environ.get("GROQ_DICTATION_DEBUG_DIR")
+        if debug_dir:
+            try:
+                from pathlib import Path
+                Path(debug_dir).mkdir(parents=True, exist_ok=True)
+                Path(debug_dir, f"req_{int(time.time() * 1000)}.{fmt}").write_bytes(audio)
+            except OSError:
+                pass
         b64 = base64.b64encode(audio).decode("ascii")
         payload: dict = {
             "model": self.model,
@@ -309,7 +332,13 @@ class OpenRouterSttTranscriber:
                 json=payload,
                 headers=headers,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(
+                    f"OpenRouter STT HTTP {e.response.status_code}: "
+                    f"{e.response.text[:400]}"
+                ) from e
             data = resp.json()
         try:
             text = data["text"]
