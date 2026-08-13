@@ -84,6 +84,7 @@ Modules (`src/groq_dictation/`):
 | `injector.py` | Auto-detects text injection method for Wayland/X11 |
 | `app.py` | `DictationApp` orchestration (capture->transcribe->inject) |
 | `cli.py` | `groq-dictate` CLI entry point |
+| `gui.py` | `groq-dictation-gui` floating desktop widget (PySide6) |
 
 ---
 
@@ -195,7 +196,43 @@ Additional code-level mitigations (on by default):
 If a backend still drops audio, the reliable choice is a different backend
 (`groq` is free and fast; Whisper-class models are truncation-resistant).
 
-## Binding a global hotkey (KDE Plasma)
+## Desktop GUI (`groq-dictation-gui`)
+
+A small floating dictation widget (PySide6): frameless rounded card, one big
+play/pause button, an X that quits, and a gear for settings. It stays on top
+and does not steal keyboard focus, so you can press play, click into your
+editor/chat, and speak; each phrase is typed into the focused window.
+
+```bash
+# the gui entry point is installed with the package (PySide6 dependency)
+uv pip install --python .venv/bin/python -e .
+groq-dictation-gui
+```
+
+| Control | Action |
+|---|---|
+| Play button | Starts the dictation loop (record -> transcribe -> inject) |
+| Pause (same button) | Stops listening between phrases; aborts the in-progress phrase |
+| X | Stops everything and quits |
+| Gear | Provider (gpt-transcribe / groq / gemini), language, model override, always-on-top |
+
+- Same `.env` keys as the CLI; provider and language apply on the next play.
+- Settings persist to `~/.config/groq-dictation/config.json`; window position
+  is remembered.
+- While listening, pulse rings animate around the button; the last injected
+  phrase is previewed under the status.
+- Errors surface in the widget: missing API key, mic failure, transcription
+  or injection problems (non-fatal errors keep the loop running).
+
+### Desktop launcher (optional)
+
+```bash
+cp scripts/groq-dictation-gui.desktop ~/.local/share/applications/
+```
+
+The widget then appears in the KDE launcher as "Groq Dictation".
+
+---
 
 Use the wrapper script `scripts/groq-dictate-hotkey.sh`:
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import struct
+import threading
 import time
 import wave
 from dataclasses import dataclass, field
@@ -125,11 +126,19 @@ def trim_silence(
     return pcm[first * frame : (last + 1) * frame]
 
 
-def record_phrase(cfg: VADConfig, stream_callback=None) -> tuple[bytes, float]:
+def record_phrase(
+    cfg: VADConfig,
+    stream_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[bytes, float]:
     """Records one phrase.
 
     Press/release or hold-to-talk semantics are handled by the caller. This
     function blocks until a phrase boundary is detected (or max length).
+
+    If `cancel_event` is set (from any thread), the stream is aborted and the
+    function returns promptly; callers should re-check the event to discard
+    the partial audio.
 
     Returns (wav_bytes, duration_seconds).
     """
@@ -159,11 +168,17 @@ def record_phrase(cfg: VADConfig, stream_callback=None) -> tuple[bytes, float]:
         if not use_vad:
             # Fixed-length recording: sleep until target samples reached.
             while len(raw) // 2 < target:
+                if cancel_event is not None and cancel_event.is_set():
+                    stream.abort()
+                    break
                 time.sleep(0.05)
         else:
             # VAD phrase detection loop.
             speaking = False
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    stream.abort()
+                    break
                 time.sleep(0.02)
                 n_frames = len(raw) // 2 // frame_samples
                 if n_frames == 0:

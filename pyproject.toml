@@ -8,10 +8,12 @@ dependencies = [
     "sounddevice>=0.5.0",
     "numpy>=1.26",
     "python-dotenv>=1.0",
+    "pyside6>=6.7",
 ]
 
 [project.scripts]
 groq-dictate = "groq_dictation.cli:main"
+groq-dictation-gui = "groq_dictation.gui:main"
 
 [build-system]
 requires = ["hatchling"]

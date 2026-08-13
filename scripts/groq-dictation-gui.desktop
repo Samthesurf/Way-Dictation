@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Groq Dictation
+Comment=Speak into the mic, transcribe with Groq, type into any app
+Exec=/home/samuelsurf/Documents/python_stuff/groq-dictation/.venv/bin/groq-dictation-gui
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=false
