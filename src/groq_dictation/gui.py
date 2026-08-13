@@ -255,7 +255,6 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
     def set_playing(self, playing: bool) -> None:
         if self._playing != playing:
             self._playing = playing
-            self.setToolTip("Pause" if playing else "Start dictation")
             self.update()
 
     def enterEvent(self, event: QtCore.QEvent) -> None:  # noqa: D102
@@ -763,7 +762,18 @@ class DictationWindow(QtWidgets.QWidget):
         self.status_label.setStyleSheet(f"color: {colors[state]};")
         self.hint_label.setText(hint or default_hint[state])
         self.ring.set_active(state == "listening")
-        self.play_btn.set_playing(state in ("listening", "transcribing", "paused"))
+        # glyph shows the NEXT action: bars while dictating, triangle when
+        # paused or ready (standard media-button convention)
+        self.play_btn.set_playing(state in ("listening", "transcribing"))
+        self.play_btn.setToolTip(
+            {
+                "ready": "Start dictation",
+                "listening": "Pause",
+                "transcribing": "Pause",
+                "paused": "Resume",
+                "error": "Start dictation",
+            }[state]
+        )
 
     def _show_transcript(self, text: str, color: str, timeout_ms: int) -> None:
         self.transcript_label.setText(
