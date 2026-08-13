@@ -155,6 +155,11 @@ mod tests {
 
     #[test]
     fn auto_resolves_on_headless_box() {
+        // Simulate a box with no injection tools by clearing PATH and the
+        // Wayland display. No other test reads PATH, so mutating it here is
+        // safe (all tests share one process).
+        std::env::set_var("PATH", "/nonexistent-way-dictation-test-dir");
+        std::env::remove_var("WAYLAND_DISPLAY");
         // On a box with no Wayland/X11 and no tools, resolve() must error (not
         // panic) and carry a helpful message.
         let inj = Injector::new(InjectMethod::Auto);

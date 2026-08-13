@@ -10,5 +10,9 @@ test_audio/
 test_network.sh
 test_release.sh
 
+# Stale Python-era artifacts on this branch
+src/groq_dictation/
+__pycache__/
+
 # OS
 .DS_Store

@@ -28,11 +28,21 @@ pub fn config_file() -> PathBuf {
 
 /// Load API keys. Priority: real env vars > saved keys.env > project .env > CWD .env.
 ///
+/// The Python app saved keys to `~/.config/groq-dictation/keys.env`; keep
+/// reading that file as a fallback so migrating users do not lose their keys.
 /// `dotenvy` never overrides a variable that is already present in the
 /// environment, so loading in this order yields exactly that precedence.
 pub fn load_env(project_root: Option<&Path>) {
     if key_file().is_file() {
         let _ = dotenvy::from_path(key_file());
+    }
+    let legacy = config_dir()
+        .parent()
+        .map(|p| p.join("groq-dictation").join("keys.env"));
+    if let Some(legacy) = legacy {
+        if legacy.is_file() {
+            let _ = dotenvy::from_path(legacy);
+        }
     }
     if let Some(root) = project_root {
         let env_file = root.join(".env");
