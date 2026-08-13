@@ -263,9 +263,15 @@ class PulseRing(QtWidgets.QWidget):
 
 
 class PlayPauseButton(QtWidgets.QAbstractButton):
-    """Big round gradient button with a painted play/pause glyph."""
+    """Big round gradient button with a painted play/pause glyph.
+
+    Doubles as a drag handle: press-and-move drags the window (emitting
+    dragBy), press-and-release within a small threshold is a normal click.
+    """
 
     SIZE = 132
+    DRAG_THRESHOLD = 8  # px of movement before a press becomes a drag
+    dragBy = QtCore.Signal(int, int)  # window delta x, y
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -275,6 +281,9 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
         self._playing = False
         self._hover = False
         self._scale = 1.0
+        self._dragging = False
+        self._press_global = QtCore.QPoint()
+        self._last_global = QtCore.QPoint()
         self._bounce = QtCore.QVariantAnimation(self)
         self._bounce.setDuration(260)
         self._bounce.setStartValue(1.0)
@@ -283,6 +292,38 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
         self._bounce.setEndValue(1.0)
         self._bounce.valueChanged.connect(self._on_bounce)
         self.clicked.connect(self._on_click)
+
+    # ------------------------------------------------------- drag vs. click
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._press_global = event.globalPosition().toPoint()
+            self._last_global = self._press_global
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        if event.buttons() & QtCore.Qt.MouseButton.LeftButton:
+            cur = event.globalPosition().toPoint()
+            if not self._dragging and (
+                (cur - self._press_global).manhattanLength() > self.DRAG_THRESHOLD
+            ):
+                self._dragging = True
+                self.setDown(False)  # leave the pressed visual, suppress click
+            if self._dragging:
+                self.dragBy.emit(cur.x() - self._last_global.x(),
+                                 cur.y() - self._last_global.y())
+                self._last_global = cur
+                event.accept()
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
+        if self._dragging:
+            self._dragging = False
+            self.setDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _on_bounce(self, value: float) -> None:
         self._scale = value
@@ -571,6 +612,7 @@ class DictationWindow(QtWidgets.QWidget):
         self.play_btn = PlayPauseButton(center)
         self.play_btn.setGeometry(37, 37, PlayPauseButton.SIZE, PlayPauseButton.SIZE)
         self.play_btn.clicked.connect(self._on_toggle)
+        self.play_btn.dragBy.connect(self._drag_by)
         center_layout = QtWidgets.QHBoxLayout()
         center_layout.addStretch(1)
         center_layout.addWidget(center)
@@ -968,6 +1010,11 @@ class DictationWindow(QtWidgets.QWidget):
         super().moveEvent(event)
         if self._placed and not self._quitting:
             self._pos_save_timer.start()
+
+    def _drag_by(self, dx: int, dy: int) -> None:
+        """Move the window by a delta (driven by play-button drags)."""
+        self.move(self.x() + dx, self.y() + dy)
+        self._pos_save_timer.start()
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: D102
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
