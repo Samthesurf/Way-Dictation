@@ -17,8 +17,8 @@ use iced::gradient::Linear;
 use iced::mouse;
 use iced::widget::canvas::{Cache, Geometry, LineCap, LineJoin, Path, Program, Stroke};
 use iced::widget::{
-    button, center, checkbox, column, container, mouse_area, pick_list, row, stack, text,
-    text_input, Canvas,
+    button, center, column, container, mouse_area, pick_list, row, stack, text, text_input,
+    Canvas,
 };
 use iced::window::{self, Level, Position};
 use iced::{
@@ -942,7 +942,8 @@ impl WayDictationApp {
     fn settings_content(&self) -> Element<'_, Message> {
         // Mirrors the Python dialog: labels sit left of their fields, every
         // control shares one dark field style with rounded 8px borders, and
-        // the app's green is the only accent.
+        // the app's green is the only accent. All text is 13px so nothing
+        // shouts over the rest of the form.
         let header = text("Settings")
             .size(15)
             .font(Font {
@@ -955,6 +956,7 @@ impl WayDictationApp {
             text_input("Not set", &self.key_groq)
                 .on_input(Message::KeyGroq)
                 .secure(!self.reveal_groq)
+                .size(13)
                 .padding(8)
                 .width(Fill)
                 .style(field_style),
@@ -967,6 +969,7 @@ impl WayDictationApp {
             text_input("Not set", &self.key_openrouter)
                 .on_input(Message::KeyOpenrouter)
                 .secure(!self.reveal_openrouter)
+                .size(13)
                 .padding(8)
                 .width(Fill)
                 .style(field_style),
@@ -992,15 +995,19 @@ impl WayDictationApp {
 
         let model_field = text_input("Provider default", &self.draft_model)
             .on_input(Message::DraftModel)
+            .size(13)
             .padding(8)
             .width(Fill)
             .style(field_style);
 
-        let ontop_field = checkbox(self.draft_ontop)
-            .label("Always on top")
-            .on_toggle(Message::DraftOntop)
-            .text_size(12)
-            .style(checkbox_style);
+        // custom-painted checkbox (the stock iced check glyph sits
+        // off-center); left-aligned like the Python dialog
+        let ontop_field = row![
+            check_button(self.draft_ontop, Message::DraftOntop),
+            text("Always on top").size(12).color(TEXT_C),
+        ]
+        .spacing(8)
+        .align_y(Center);
 
         let keys_note = text(
             "Keys are saved to ~/.config/way-dictation/keys.env and take priority over the .env file.",
@@ -1027,30 +1034,37 @@ impl WayDictationApp {
         )
         .width(Fill)
         .padding(Padding {
-            top: 10.0,
+            top: 8.0,
             right: 0.0,
             bottom: 0.0,
             left: 0.0,
         })
         .align_x(Alignment::End);
 
+        // vertical rhythm: generous air before each section header, even
+        // gaps between the rows inside a section
         let fields = column![
-            section_label("API KEYS"),
+            section_label("API KEYS", 0.0),
             label_row("Groq API key", groq_field),
             label_row("OpenRouter API key", or_field),
             keys_note,
-            section_label("ENGINE"),
+            section_label("ENGINE", 12.0),
             label_row("Provider", provider_field),
             label_row("Language", language_field),
             label_row("Model", model_field),
-            label_row("", ontop_field),
+            container(ontop_field).padding(Padding {
+                top: 2.0,
+                right: 0.0,
+                bottom: 2.0,
+                left: 0.0,
+            }),
             engine_note,
             buttons,
         ]
-        .spacing(7)
+        .spacing(10)
         .width(Fill);
 
-        let body = column![header, fields].spacing(10);
+        let body = column![header, fields].spacing(14);
 
         container(body).width(Fill).height(Fill).into()
     }
@@ -1180,13 +1194,48 @@ fn label_row<'a>(label: &'a str, field: impl Into<Element<'a, Message>>) -> Elem
     .into()
 }
 
-fn section_label(label: &str) -> Element<'_, Message> {
-    container(text(label).size(11).color(FAINT))
-        .padding(Padding {
-            top: 8.0,
-            right: 0.0,
-            bottom: 0.0,
-            left: 0.0,
+/// Section header: white bold to contrast with the muted labels, with
+/// controllable top air so sections read as distinct groups.
+fn section_label(label: &str, top: f32) -> Element<'_, Message> {
+    container(
+        text(label)
+            .size(12)
+            .font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+            .color(TEXT_C),
+    )
+    .padding(Padding {
+        top,
+        right: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+    })
+    .into()
+}
+
+/// Painted checkbox: rounded dark box, green fill and a hand-drawn white
+/// check centered precisely when checked. Pressing sends the toggled value.
+fn check_button<'a>(checked: bool, on_press: fn(bool) -> Message) -> Element<'a, Message> {
+    button(Canvas::new(CheckGlyph { checked }).width(20).height(20))
+        .on_press(on_press(!checked))
+        .padding(0)
+        .width(20)
+        .height(20)
+        .style(|_t, s| button::Style {
+            background: Some(Background::Color(if matches!(s, button::Status::Hovered) {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+            } else {
+                Color::TRANSPARENT
+            })),
+            text_color: TEXT_C,
+            border: Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            shadow: Shadow::default(),
+            snap: false,
         })
         .into()
 }
@@ -1250,29 +1299,6 @@ fn menu_style(_theme: &Theme) -> iced::overlay::menu::Style {
             offset: iced::Vector::new(0.0, 6.0),
             blur_radius: 18.0,
         },
-    }
-}
-
-/// Checkbox: dark field box, green fill and white tick when checked.
-fn checkbox_style(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
-    let checked = match status {
-        checkbox::Status::Active { is_checked } => is_checked,
-        checkbox::Status::Hovered { is_checked } => is_checked,
-        checkbox::Status::Disabled { is_checked } => is_checked,
-    };
-    checkbox::Style {
-        background: if checked {
-            Background::Color(ACCENT)
-        } else {
-            Background::Color(FIELD_BG)
-        },
-        icon_color: Color::WHITE,
-        border: Border {
-            radius: 4.0.into(),
-            width: 1.0,
-            color: if checked { ACCENT } else { BORDER },
-        },
-        text_color: Some(TEXT_C),
     }
 }
 
@@ -1363,6 +1389,12 @@ struct CloseGlyph;
 /// Open eye (ring + pupil) or closed eye (dimmed ring + slash).
 struct EyeGlyph {
     open: bool,
+}
+
+/// Settings checkbox: rounded dark box; green fill with a hand-drawn white
+/// check, precisely centered, when checked.
+struct CheckGlyph {
+    checked: bool,
 }
 
 impl<Message> Program<Message> for GearGlyph {
@@ -1465,6 +1497,49 @@ impl<Message> Program<Message> for EyeGlyph {
                     ),
                     stroke.with_color(color),
                 );
+            }
+        });
+        vec![geometry]
+    }
+}
+
+impl<Message> Program<Message> for CheckGlyph {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry<Renderer>> {
+        let cache = Cache::new();
+        let geometry = cache.draw(renderer, bounds.size(), |frame| {
+            // 20x20 canvas: the box leaves a 1px border for the stroke
+            let box_path = Path::rounded_rectangle(
+                Point::new(1.0, 1.0),
+                Size::new(18.0, 18.0),
+                iced::border::Radius::new(4.0),
+            );
+            if self.checked {
+                frame.fill(&box_path, ACCENT);
+                // check mark, centered by its bounding box
+                let c = frame.center();
+                let stroke = Stroke::default()
+                    .with_color(Color::WHITE)
+                    .with_width(2.2)
+                    .with_line_cap(LineCap::Round)
+                    .with_line_join(LineJoin::Round);
+                let path = Path::new(|b| {
+                    b.move_to(Point::new(c.x - 4.6, c.y + 0.4));
+                    b.line_to(Point::new(c.x - 1.7, c.y + 3.3));
+                    b.line_to(Point::new(c.x + 4.6, c.y - 3.4));
+                });
+                frame.stroke(&path, stroke);
+            } else {
+                frame.fill(&box_path, FIELD_BG);
+                frame.stroke(&box_path, Stroke::default().with_color(BORDER).with_width(1.0));
             }
         });
         vec![geometry]
