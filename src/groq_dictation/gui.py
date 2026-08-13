@@ -44,16 +44,20 @@ DEFAULT_SETTINGS = {
 }
 
 # --- palette ---
-CARD_TOP = "#20242c"
-CARD_BOTTOM = "#14171c"
-PANEL = "#1b1f26"
-FIELD_BG = "#252a33"
-BORDER = "#2e3440"
+CARD_TOP = "#000000"
+CARD_BOTTOM = "#000000"
+PANEL = "#0d0e10"
+FIELD_BG = "#17191d"
+BORDER = "#343842"
+BORDER_HOVER = "#454b58"
+BORDER_FOCUS = "#4d5566"
 TEXT = "#e8ebf2"
 DIM = "#8b93a5"
 FAINT = "#6d7686"
-ACCENT = "#5f8dff"
-ACCENT_DARK = "#3d5afe"
+ACCENT = "#689f63"
+ACCENT_DARK = "#4e774a"
+ACCENT_HOVER = "#77b276"
+ACCENT_PRESSED = "#3f6340"
 AMBER = "#ffb454"
 RED = "#ff5f6b"
 GREEN = "#3ecf8e"
@@ -111,6 +115,42 @@ def save_settings(settings: dict) -> None:
 
 def _elide(text: str, font: QtGui.QFont, width: int) -> str:
     return QtGui.QFontMetrics(font).elidedText(text, QtCore.Qt.TextElideMode.ElideRight, width)
+
+
+def _paint_chevron(p: QtGui.QPainter) -> None:
+    pen = QtGui.QPen(QtGui.QColor("#8f97a5"), 2.6, QtCore.Qt.PenStyle.SolidLine,
+                     QtCore.Qt.PenCapStyle.RoundCap, QtCore.Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.drawPolyline([QtCore.QPointF(8, 9.5), QtCore.QPointF(12, 13.5), QtCore.QPointF(16, 9.5)])
+
+
+def _paint_check(p: QtGui.QPainter) -> None:
+    pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 240), 2.8, QtCore.Qt.PenStyle.SolidLine,
+                     QtCore.Qt.PenCapStyle.RoundCap, QtCore.Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.drawPolyline([QtCore.QPointF(6.5, 12.5), QtCore.QPointF(10, 16), QtCore.QPointF(17.5, 8)])
+
+
+def _write_glyph_assets() -> tuple[str | None, str | None]:
+    """Paint chevron/check PNGs used by QSS; return their paths (or None)."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        chevron = CONFIG_DIR / "chevron.png"
+        check = CONFIG_DIR / "check.png"
+    except OSError:
+        return None, None
+    try:
+        for path, fn in ((chevron, _paint_chevron), (check, _paint_check)):
+            pm = QtGui.QPixmap(24, 24)
+            pm.fill(QtCore.Qt.GlobalColor.transparent)
+            p = QtGui.QPainter(pm)
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            fn(p)
+            p.end()
+            pm.save(str(path))
+    except OSError:
+        return None, None
+    return str(chevron), str(check)
 
 
 class DictationWorker(QtCore.QThread):
@@ -217,7 +257,7 @@ class PulseRing(QtWidgets.QWidget):
             tt = (self._t + phase) % 1.0
             radius = max_r * (0.58 + 0.42 * tt)
             alpha = int((1.0 - tt) * 75)
-            p.setPen(QtGui.QPen(QtGui.QColor(95, 141, 255, alpha), 2.0))
+            p.setPen(QtGui.QPen(QtGui.QColor(104, 159, 99, alpha), 2.0))
             p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             p.drawEllipse(center, radius, radius)
 
@@ -283,17 +323,17 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
         if self._playing:
             glow_r = disc.width() * 0.603  # 76px, inside the 66px half-width
             glow = QtGui.QRadialGradient(center, glow_r)
-            glow.setColorAt(0.0, QtGui.QColor(95, 141, 255, 70))
-            glow.setColorAt(0.8, QtGui.QColor(95, 141, 255, 28))
-            glow.setColorAt(0.87, QtGui.QColor(95, 141, 255, 0))
-            glow.setColorAt(1.0, QtGui.QColor(95, 141, 255, 0))
+            glow.setColorAt(0.0, QtGui.QColor(104, 159, 99, 70))
+            glow.setColorAt(0.8, QtGui.QColor(104, 159, 99, 28))
+            glow.setColorAt(0.87, QtGui.QColor(104, 159, 99, 0))
+            glow.setColorAt(1.0, QtGui.QColor(104, 159, 99, 0))
             p.setPen(QtCore.Qt.PenStyle.NoPen)
             p.setBrush(glow)
             p.drawEllipse(center, glow_r, glow_r)
 
         # main disc
-        top = ACCENT if self._hover else "#5f8dff"
-        bottom = "#2f4fd9" if self.isDown() else ACCENT_DARK
+        top = ACCENT_HOVER if self._hover else ACCENT
+        bottom = ACCENT_PRESSED if self.isDown() else ACCENT_DARK
         grad = QtGui.QLinearGradient(disc.topLeft(), disc.bottomRight())
         grad.setColorAt(0.0, QtGui.QColor(top))
         grad.setColorAt(1.0, QtGui.QColor(bottom))
@@ -571,9 +611,19 @@ class DictationWindow(QtWidgets.QWidget):
         self.settings_panel.setObjectName("settingsPanel")
         self.settings_panel.setMaximumHeight(0)
         self._panel_layout = QtWidgets.QVBoxLayout(self.settings_panel)
-        self._panel_layout.setContentsMargins(10, 6, 10, 10)
+        self._panel_layout.setContentsMargins(10, 6, 10, 12)
         self._panel_layout.setSpacing(7)
         lay.addWidget(self.settings_panel)
+
+        chevron_path, check_path = _write_glyph_assets()
+        chevron_css = (
+            f"QComboBox::down-arrow {{ image: url({chevron_path}); width: 13px; height: 13px; }}"
+            if chevron_path else ""
+        )
+        check_css = (
+            f"QCheckBox::indicator:checked {{ image: url({check_path}); }}"
+            if check_path else ""
+        )
 
         self.setStyleSheet(
             f"""
@@ -581,12 +631,12 @@ class DictationWindow(QtWidgets.QWidget):
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 {CARD_TOP}, stop:1 {CARD_BOTTOM});
                 border-radius: 22px;
-                border: 1px solid #2AFFFFFF;
+                border: 1px solid #1AFFFFFF;
             }}
             QFrame#settingsPanel {{
                 background: {PANEL};
                 border-radius: 14px;
-                border: 1px solid #1ABBBBDD;
+                border: 1px solid #131518;
             }}
             QLabel#titleLabel {{ color: {DIM}; }}
             QLabel#statusLabel {{ color: {DIM}; }}
@@ -595,20 +645,41 @@ class DictationWindow(QtWidgets.QWidget):
             QLabel#fieldLabel {{ color: {DIM}; font-size: 11px; }}
             QComboBox {{
                 background: {FIELD_BG}; color: {TEXT};
-                border: 1px solid {BORDER}; border-radius: 7px;
-                padding: 3px 8px; font-size: 11px;
+                border: 1px solid {BORDER}; border-radius: 8px;
+                padding: 5px 26px 5px 10px; font-size: 11px;
             }}
+            QComboBox:hover {{ border-color: {BORDER_HOVER}; }}
+            QComboBox:focus {{ border-color: {BORDER_FOCUS}; }}
+            QComboBox::drop-down {{ border: none; width: 22px; }}
+            {chevron_css}
             QComboBox QAbstractItemView {{
                 background: {FIELD_BG}; color: {TEXT};
-                selection-background-color: {ACCENT_DARK};
-                border: 1px solid {BORDER};
+                selection-background-color: {ACCENT};
+                selection-color: #ffffff;
+                border: 1px solid {BORDER}; border-radius: 8px;
+                padding: 4px; outline: 0;
+            }}
+            QComboBox QAbstractItemView::item {{ padding: 5px 8px; border-radius: 4px; }}
+            QComboBox QLineEdit {{
+                background: transparent; border: none; color: {TEXT};
+                padding: 0; font-size: 11px;
             }}
             QLineEdit {{
                 background: {FIELD_BG}; color: {TEXT};
-                border: 1px solid {BORDER}; border-radius: 7px;
-                padding: 3px 8px; font-size: 11px;
+                border: 1px solid {BORDER}; border-radius: 8px;
+                padding: 5px 10px; font-size: 11px;
             }}
+            QLineEdit:focus {{ border-color: {BORDER_FOCUS}; }}
             QCheckBox {{ color: {TEXT}; font-size: 11px; }}
+            QCheckBox::indicator {{
+                width: 15px; height: 15px; border-radius: 4px;
+                border: 1px solid {BORDER}; background: {FIELD_BG};
+            }}
+            QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+            QCheckBox::indicator:checked {{
+                background: {ACCENT}; border-color: {ACCENT};
+            }}
+            {check_css}
             QToolTip {{
                 background: {FIELD_BG}; color: {TEXT};
                 border: 1px solid {BORDER}; border-radius: 6px;
