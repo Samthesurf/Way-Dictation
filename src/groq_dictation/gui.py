@@ -342,7 +342,9 @@ class PlayPauseButton(QtWidgets.QAbstractButton):
             p.drawRoundedRect(QtCore.QRectF(x1, y, bar_w, bar_h), r, r)
             p.drawRoundedRect(QtCore.QRectF(x2, y, bar_w, bar_h), r, r)
         else:
-            r = QtCore.QRectF(center.x() - 17, center.y() - 24, 36, 48)
+            # nudge right: a play triangle's visual mass is on the left, so a
+            # geometrically centered glyph reads as shifted left
+            r = QtCore.QRectF(center.x() - 14, center.y() - 24, 36, 48)
             path = QtGui.QPainterPath()
             path.moveTo(r.left() + 2, r.top())
             path.lineTo(r.right(), r.center().y())
