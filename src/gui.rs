@@ -922,7 +922,8 @@ impl WayDictationApp {
             ),
             text("Settings").size(11),
             tooltip::Position::FollowCursor,
-        );
+        )
+        .style(tooltip_style);
         let close = tooltip(
             icon_button(
                 Canvas::new(CloseGlyph).width(30).height(30),
@@ -931,7 +932,8 @@ impl WayDictationApp {
             ),
             text("Stop and quit").size(11),
             tooltip::Position::FollowCursor,
-        );
+        )
+        .style(tooltip_style);
 
         let header = row![
             gear,
@@ -989,7 +991,8 @@ impl WayDictationApp {
             play_btn,
             text(self.play_tooltip()).size(11),
             tooltip::Position::FollowCursor,
-        );
+        )
+        .style(tooltip_style);
 
         // pulse ring behind the button: expanding, fading rings while
         // listening (the Python PulseRing), plus the recording glow
@@ -1074,7 +1077,8 @@ impl WayDictationApp {
                 eye_button(self.reveal_groq, Message::ToggleRevealGroq),
                 text("Show / hide").size(11),
                 tooltip::Position::FollowCursor,
-            ),
+            )
+            .style(tooltip_style),
         ]
         .spacing(6)
         .align_y(Center);
@@ -1091,7 +1095,8 @@ impl WayDictationApp {
                 eye_button(self.reveal_openrouter, Message::ToggleRevealOpenrouter),
                 text("Show / hide").size(11),
                 tooltip::Position::FollowCursor,
-            ),
+            )
+            .style(tooltip_style),
         ]
         .spacing(6)
         .align_y(Center);
@@ -1375,6 +1380,23 @@ fn field_style(_theme: &Theme, status: text_input::Status) -> text_input::Style 
         placeholder: FAINT,
         value: TEXT_C,
         selection: Color::from_rgba(0.41, 0.62, 0.39, 0.35),
+    }
+}
+
+/// Tooltip bubble style. iced 0.14's default container style is transparent,
+/// so an unstyled tooltip renders as bare white text floating over the
+/// window; this gives it the app's dark field background and border.
+fn tooltip_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(FIELD_BG)),
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: BORDER,
+        },
+        text_color: Some(TEXT_C),
+        shadow: Shadow::default(),
+        snap: false,
     }
 }
 
