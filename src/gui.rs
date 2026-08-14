@@ -35,6 +35,9 @@ use crate::injector::{InjectMethod, Injector};
 
 const MIN_WAV_BYTES: usize = 44 + 160;
 
+/// One full pulse-ring loop in seconds (matches the Python QVariantAnimation).
+const PULSE_PERIOD: f32 = 1.6;
+
 // --- palette (mirrors the Python widget) ---
 const ACCENT: Color = Color::from_rgb(0.41, 0.62, 0.39);
 const ACCENT_HOVER: Color = Color::from_rgb(0.47, 0.70, 0.46);
@@ -362,6 +365,10 @@ enum Message {
 /// stream builder pulls the receiver from here exactly once at startup.
 static EVENT_RX: Mutex<Option<UnboundedReceiver<UiEvent>>> = Mutex::new(None);
 
+/// True while the recorder is listening. The tick stream reads it to pick its
+/// interval (33ms while the pulse ring animates, 250ms while idle).
+static PULSE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 fn worker_stream() -> impl Stream<Item = Message> {
     let rx = EVENT_RX
         .lock()
@@ -371,13 +378,19 @@ fn worker_stream() -> impl Stream<Item = Message> {
     rx.map(Message::Worker)
 }
 
-/// 250ms heartbeat stream for transcript dimming and window-position saving.
-/// Backed by a plain thread: iced 0.14's default executor is the futures
-/// thread pool, so timer streams must not assume a tokio reactor.
+/// Heartbeat stream for the pulse ring (33ms while listening) and for
+/// transcript dimming / window-position saving (250ms while idle). Backed by
+/// a plain thread: iced 0.14's default executor is the futures thread pool,
+/// so timer streams must not assume a tokio reactor.
 fn tick_stream() -> impl Stream<Item = Message> {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded::<()>();
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(250));
+        let interval = if PULSE_ACTIVE.load(Ordering::Relaxed) {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(250)
+        };
+        std::thread::sleep(interval);
         if tx.unbounded_send(()).is_err() {
             break;
         }
@@ -412,6 +425,10 @@ struct WayDictationApp {
     pos_save_due: Option<Instant>,
     // current window height, tracked so the widget can stretch to fit text
     win_h: f32,
+    // pulse-ring animation (mirrors the Python PulseRing)
+    pulse_t: f32,
+    last_tick: Option<Instant>,
+    last_slow: Instant,
 }
 
 impl WayDictationApp {
@@ -447,6 +464,9 @@ impl WayDictationApp {
                 last_pos: None,
                 pos_save_due: None,
                 win_h: 420.0,
+                pulse_t: 0.0,
+                last_tick: None,
+                last_slow: Instant::now(),
             },
             window::latest().map(Message::WindowId),
         )
@@ -547,6 +567,24 @@ impl WayDictationApp {
     }
 
     fn on_tick(&mut self) -> Task<Message> {
+        let now = Instant::now();
+        // advance the pulse-ring phase; frozen at zero when not listening
+        let pulsing = PULSE_ACTIVE.load(Ordering::Relaxed);
+        if let Some(last) = self.last_tick {
+            let dt = (now - last).as_secs_f32().min(0.25);
+            self.pulse_t = if pulsing {
+                (self.pulse_t + dt) % PULSE_PERIOD
+            } else {
+                0.0
+            };
+        }
+        self.last_tick = Some(now);
+        // housekeeping below stays on the ~250ms cadence while the pulse
+        // stream ticks fast
+        if now - self.last_slow < Duration::from_millis(250) {
+            return Task::none();
+        }
+        self.last_slow = now;
         // transcript settles after its bright window
         if let Some(t0) = self.transcript_set {
             let secs = if self.transcript_error { 2.6 } else { 2.2 };
@@ -636,6 +674,7 @@ impl WayDictationApp {
                 warn!("{e}");
                 self.fatal = true;
                 self.state = "error";
+                PULSE_ACTIVE.store(false, Ordering::Relaxed);
                 // Mirror the Python key-missing wording.
                 let msg = e.to_string();
                 let key = msg.split(" not set").next().unwrap_or("the API key");
@@ -676,6 +715,8 @@ impl WayDictationApp {
 
     fn set_state(&mut self, state: &'static str) {
         self.state = state;
+        // the pulse ring animates only while listening
+        PULSE_ACTIVE.store(state == "listening", Ordering::Relaxed);
         match state {
             "ready" => {
                 self.status = "Ready".to_string();
@@ -731,6 +772,7 @@ impl WayDictationApp {
                 if fatal {
                     self.fatal = true;
                     self.state = "error";
+                    PULSE_ACTIVE.store(false, Ordering::Relaxed);
                     self.status = "Stopped".to_string();
                     self.hint = message;
                     self.worker = None;
@@ -894,7 +936,17 @@ impl WayDictationApp {
                 }
             });
 
-        let center_block = container(center(play_btn)).height(206).width(Fill);
+        // pulse ring behind the button: expanding, fading rings while
+        // listening (the Python PulseRing), plus the recording glow
+        let ring = Canvas::new(PulseRingProgram {
+            t: self.pulse_t,
+            active: matches!(self.state, "listening"),
+            glowing: playing,
+        })
+        .width(206)
+        .height(206);
+
+        let center_block = container(center(stack![ring, play_btn])).height(206).width(Fill);
 
         let status = text(&self.status)
             .size(18)
@@ -1596,6 +1648,63 @@ impl<Message> Program<Message> for GlyphProgram {
                     .with_line_join(LineJoin::Round);
                 frame.fill(&path, white);
                 frame.stroke(&path, stroke);
+            }
+        });
+        vec![geometry]
+    }
+}
+
+/// Expanding, fading rings shown around the play button while listening, plus
+/// the soft green glow the Qt button paints while recording. Mirrors the
+/// Python PulseRing: a 1.6s loop with two rings half a phase apart, each
+/// growing from 0.58x to 1.0x of the ring box while its alpha fades out.
+struct PulseRingProgram {
+    t: f32, // seconds since the pulse started
+    active: bool, // rings animate only while listening
+    glowing: bool, // static glow while listening or transcribing
+}
+
+impl<Message> Program<Message> for PulseRingProgram {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry<Renderer>> {
+        let cache = Cache::new();
+        let geometry = cache.draw(renderer, bounds.size(), |frame| {
+            let c = frame.center();
+            let green = |a: f32| Color::from_rgba(ACCENT.r, ACCENT.g, ACCENT.b, a);
+
+            if self.glowing {
+                // Python's radial glow fades to zero just past the disc edge;
+                // layered concentric strokes approximate the falloff (iced's
+                // canvas Gradient is linear-only).
+                for (r, a) in [(63.5, 0.07), (64.5, 0.04), (65.5, 0.02)] {
+                    frame.stroke(
+                        &Path::circle(c, r),
+                        Stroke::default().with_color(green(a)).with_width(1.8),
+                    );
+                }
+            }
+
+            if !self.active {
+                return;
+            }
+            let max_r = bounds.width.min(bounds.height) / 2.0 - 4.0;
+            let t = (self.t / PULSE_PERIOD).fract();
+            for phase in [0.0, 0.5] {
+                let tt = (t + phase).fract();
+                let radius = max_r * (0.58 + 0.42 * tt);
+                let alpha = (1.0 - tt) * 75.0 / 255.0;
+                frame.stroke(
+                    &Path::circle(c, radius),
+                    Stroke::default().with_color(green(alpha)).with_width(2.0),
+                );
             }
         });
         vec![geometry]
