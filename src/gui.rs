@@ -1848,14 +1848,14 @@ fn make_icon() -> window::icon::Icon {
             let mut cb = 0.0f32;
             let mut ca = 0.0f32;
 
-            // over-composite `color` at coverage `a`
+            // over-composite `color` at coverage `a` (premultiplied source-over)
             let paint = |cr: &mut f32, cg: &mut f32, cb: &mut f32, ca: &mut f32, a: f32, color: [f32; 3]| {
                 if a > 0.0 {
-                    let inv = 1.0 - *ca;
-                    *cr += color[0] * a * inv;
-                    *cg += color[1] * a * inv;
-                    *cb += color[2] * a * inv;
-                    *ca += a * inv;
+                    let inv = 1.0 - a;
+                    *cr = *cr * inv + color[0] * a;
+                    *cg = *cg * inv + color[1] * a;
+                    *cb = *cb * inv + color[2] * a;
+                    *ca = *ca * inv + a;
                 }
             };
 
@@ -1880,7 +1880,9 @@ fn make_icon() -> window::icon::Icon {
             let d = (dx * dx + dy * dy).sqrt();
             let ang = dy.atan2(dx).to_degrees();
             if d > 0.1 && (20.0..=160.0).contains(&ang) {
-                let a = cover((d - 12.5f32).min(15.5f32 - d));
+                // signed distance to the ring band [12.5, 15.5]; only the band
+                // itself paints, not the whole wedge
+                let a = cover(((d - 14.0).abs()) - 1.5);
                 paint(&mut cr, &mut cg, &mut cb, &mut ca, a, white);
             }
 

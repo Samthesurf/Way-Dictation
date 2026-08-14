@@ -1,0 +1,28 @@
+# Maintainer: Samuel Ukpai <Samthesurf@users.noreply.github.com>
+pkgname=way-dictation
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Native Linux speech-to-text dictation that types into any focused app (Groq / OpenRouter)"
+arch=('x86_64')
+url="https://github.com/Samthesurf/Way-Dictation"
+license=('MIT')
+depends=('libxkbcommon' 'fontconfig' 'wayland' 'libx11' 'libgl' 'vulkan-icd-loader')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Samthesurf/Way-Dictation/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    CARGO_BUILD_JOBS=2 cargo build --release --features gui
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/way-dictate "$pkgdir/usr/bin/way-dictate"
+    install -Dm755 target/release/way-dictation-gui "$pkgdir/usr/bin/way-dictation-gui"
+    install -Dm755 packaging/way-dictate-hotkey.sh "$pkgdir/usr/bin/way-dictate-hotkey"
+    install -Dm644 packaging/way-dictation.desktop "$pkgdir/usr/share/applications/way-dictation.desktop"
+    install -Dm644 packaging/icons/way-dictation-128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/way-dictation.png"
+    install -Dm644 packaging/icons/way-dictation-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/way-dictation.png"
+    install -Dm644 packaging/icons/way-dictation-512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/way-dictation.png"
+}

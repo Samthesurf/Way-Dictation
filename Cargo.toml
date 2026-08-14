@@ -35,3 +35,36 @@ serde_json = "1"
 # GUI (build with: cargo build --features gui --bin way-dictation-gui)
 iced = { version = "0.14", optional = true, features = ["canvas"] }
 iced_winit = { version = "0.14", optional = true }
+
+# --- Debian/Ubuntu package (cargo deb) ---
+[package.metadata.deb]
+maintainer = "Samuel Ukpai <Samthesurf@users.noreply.github.com>"
+section = "utils"
+priority = "optional"
+features = ["gui"]
+depends = "$auto"
+assets = [
+    ["target/release/way-dictate", "usr/bin/", "755"],
+    ["target/release/way-dictation-gui", "usr/bin/", "755"],
+    ["packaging/way-dictate-hotkey.sh", "usr/bin/", "755"],
+    ["packaging/way-dictation.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/way-dictation-128.png", "usr/share/icons/hicolor/128x128/apps/way-dictation.png", "644"],
+    ["packaging/icons/way-dictation-256.png", "usr/share/icons/hicolor/256x256/apps/way-dictation.png", "644"],
+    ["packaging/icons/way-dictation-512.png", "usr/share/icons/hicolor/512x512/apps/way-dictation.png", "644"],
+]
+
+# --- Fedora/RHEL package (cargo generate-rpm) ---
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "Native Linux speech-to-text dictation (Groq / OpenRouter)"
+description = "Speak into the mic, transcribe with Groq or OpenRouter, and type into any focused app. Ships a floating GUI widget and a CLI (way-dictate)."
+features = ["gui"]
+assets = [
+    { source = "target/release/way-dictate", dest = "/usr/bin/way-dictate", mode = "755" },
+    { source = "target/release/way-dictation-gui", dest = "/usr/bin/way-dictation-gui", mode = "755" },
+    { source = "packaging/way-dictate-hotkey.sh", dest = "/usr/bin/way-dictate-hotkey", mode = "755" },
+    { source = "packaging/way-dictation.desktop", dest = "/usr/share/applications/way-dictation.desktop", mode = "644" },
+    { source = "packaging/icons/way-dictation-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/way-dictation.png", mode = "644" },
+    { source = "packaging/icons/way-dictation-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/way-dictation.png", mode = "644" },
+    { source = "packaging/icons/way-dictation-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/way-dictation.png", mode = "644" },
+]

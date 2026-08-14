@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Way Dictation
+Comment=Speak into the mic, transcribe with Groq/OpenRouter, type into any app
+Exec=way-dictation-gui
+Icon=way-dictation
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=false
+StartupWMClass=way-dictation
+Keywords=dictation;speech;transcribe;voice;accessibility;
