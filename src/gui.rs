@@ -946,7 +946,10 @@ impl WayDictationApp {
         .width(206)
         .height(206);
 
-        let center_block = container(center(stack![ring, play_btn])).height(206).width(Fill);
+        // iced Stack positions later children by their own layout, so the
+        // button must expand into the full 206px box (center()) or it would
+        // sit at the stack's top-left, 40px off the ring's center.
+        let center_block = container(center(stack![ring, center(play_btn)])).height(206).width(Fill);
 
         let status = text(&self.status)
             .size(18)
