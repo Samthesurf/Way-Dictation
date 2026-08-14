@@ -26,6 +26,11 @@ pub struct VadConfig {
     pub threshold: f32,
     /// Frames of sustained silence before a phrase is considered finished.
     pub silence_frames_trigger: u32,
+    /// Frames of sustained speech required before a phrase "arms". Rejects
+    /// keyboard clicks and other short transients that would otherwise be
+    /// recorded and sent to the API as noise (a click is 2-5 frames; real
+    /// speech sustains well past this).
+    pub speech_frames_trigger: u32,
     /// Maximum phrase length (ms) before we cut it off regardless.
     pub max_phrase_ms: f64,
     /// Fixed recording length when VAD is disabled (ms).
@@ -44,6 +49,7 @@ impl Default for VadConfig {
             frame_ms: 20,
             threshold: 0.010,
             silence_frames_trigger: 20,
+            speech_frames_trigger: 8,
             max_phrase_ms: 30000.0,
             fixed_record_ms: 5000.0,
             trim_silence: true,
@@ -56,6 +62,7 @@ impl Default for VadConfig {
 struct EnergyVad {
     cfg: VadConfig,
     silence_runs: u32,
+    speech_runs: u32,
 }
 
 impl EnergyVad {
@@ -63,6 +70,7 @@ impl EnergyVad {
         EnergyVad {
             cfg: cfg.clone(),
             silence_runs: 0,
+            speech_runs: 0,
         }
     }
 
@@ -87,9 +95,14 @@ impl EnergyVad {
     /// Returns "speech", "silence", or "end".
     fn process_frame(&mut self, frame: &[i16]) -> &'static str {
         if self.is_speech(frame) {
+            self.speech_runs += 1;
             self.silence_runs = 0;
-            return "speech";
+            if self.speech_runs >= self.cfg.speech_frames_trigger {
+                return "speech";
+            }
+            return "silence"; // not yet sustained enough to arm the phrase
         }
+        self.speech_runs = 0;
         self.silence_runs += 1;
         if self.silence_runs >= self.cfg.silence_frames_trigger {
             return "end";
@@ -336,9 +349,18 @@ mod tests {
         let quiet = vec![0i16; 320];
         assert!(vad.is_speech(&loud));
         assert!(!vad.is_speech(&quiet));
-        assert_eq!(vad.process_frame(&loud), "speech");
-        // 20 consecutive silent frames -> "end"
+        // a click-like transient (a few frames) must not arm the phrase
+        for _ in 0..3 {
+            assert_eq!(vad.process_frame(&loud), "silence");
+        }
+        assert_eq!(vad.process_frame(&quiet), "silence");
+        // sustained speech arms once speech_frames_trigger is reached
         let mut state = "silence";
+        for _ in 0..8 {
+            state = vad.process_frame(&loud);
+        }
+        assert_eq!(state, "speech");
+        // 20 consecutive silent frames -> "end"
         for _ in 0..20 {
             state = vad.process_frame(&quiet);
         }
