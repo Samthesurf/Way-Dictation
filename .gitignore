@@ -14,5 +14,12 @@ test_release.sh
 src/groq_dictation/
 __pycache__/
 
+# Packaging build outputs (binaries are artifacts, not source)
+/packaging/dist/
+/AppDir/
+/squashfs-root/
+*.AppImage
+/packaging/tools/
+
 # OS
 .DS_Store
