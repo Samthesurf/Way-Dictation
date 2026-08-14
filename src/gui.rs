@@ -1456,7 +1456,10 @@ fn card_style(_theme: &Theme) -> container::Style {
 
 /// Soft drop shadow: stacked rounded rects with decaying alpha, offset 6px
 /// down (wgpu's native shadow blur misrenders on this transparent-window
-/// setup, so the blur is faked deterministically).
+/// setup, so the blur is faked deterministically). The layer alphas are
+/// tuned so the cumulative falloff mirrors the Python QGraphicsDropShadowEffect
+/// (blur 24, offset 0/8, black at 0.63): ~0.38 just outside the card edge,
+/// fading to zero about 18px out.
 fn shadow_layer(exp: f32, alpha: f32) -> Element<'static, Message> {
     container(
         container(column![])
@@ -1496,12 +1499,15 @@ fn card_shell<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
     let padded_card = container(card).padding(26).width(Fill).height(Fill);
 
     stack![
-        shadow_layer(15.0, 0.016),
-        shadow_layer(12.0, 0.028),
-        shadow_layer(9.0, 0.045),
-        shadow_layer(6.0, 0.07),
-        shadow_layer(3.0, 0.10),
-        shadow_layer(0.0, 0.15),
+        shadow_layer(18.0, 0.006),
+        shadow_layer(16.0, 0.010),
+        shadow_layer(14.0, 0.016),
+        shadow_layer(12.0, 0.024),
+        shadow_layer(10.0, 0.035),
+        shadow_layer(8.0, 0.050),
+        shadow_layer(6.0, 0.070),
+        shadow_layer(4.0, 0.100),
+        shadow_layer(2.0, 0.140),
         container(padded_card)
             .width(Fill)
             .height(Fill)
