@@ -143,9 +143,12 @@ fn stitch(parts: &[String]) -> String {
     built.join(" ")
 }
 
-/// Write request audio to a debug directory when `WAY_DICTATION_DEBUG_DIR` is set.
+/// Write request audio to a debug directory when `WAY_DICTATION_DEBUG_DIR`
+/// (or the Python project's `GROQ_DICTATION_DEBUG_DIR`) is set.
 fn maybe_dump(fmt: &str, audio: &[u8]) {
-    if let Ok(dir) = std::env::var("WAY_DICTATION_DEBUG_DIR") {
+    let dir = std::env::var("WAY_DICTATION_DEBUG_DIR")
+        .or_else(|_| std::env::var("GROQ_DICTATION_DEBUG_DIR"));
+    if let Ok(dir) = dir {
         if let Ok(()) = fs::create_dir_all(&dir) {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

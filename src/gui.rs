@@ -17,7 +17,7 @@ use iced::gradient::Linear;
 use iced::mouse;
 use iced::widget::canvas::{Cache, Geometry, LineCap, LineJoin, Path, Program, Stroke};
 use iced::widget::{
-    button, center, column, container, mouse_area, pick_list, row, stack, text, text_input,
+    button, center, column, container, mouse_area, pick_list, row, stack, text, text_input, tooltip,
     Canvas,
 };
 use iced::window::{self, Level, Position};
@@ -369,6 +369,10 @@ static EVENT_RX: Mutex<Option<UnboundedReceiver<UiEvent>>> = Mutex::new(None);
 /// interval (33ms while the pulse ring animates, 250ms while idle).
 static PULSE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// True while the play button's click-bounce runs (260ms); the tick stream
+/// must also run fast so the pop animates smoothly.
+static BOUNCE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 fn worker_stream() -> impl Stream<Item = Message> {
     let rx = EVENT_RX
         .lock()
@@ -385,7 +389,8 @@ fn worker_stream() -> impl Stream<Item = Message> {
 fn tick_stream() -> impl Stream<Item = Message> {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded::<()>();
     std::thread::spawn(move || loop {
-        let interval = if PULSE_ACTIVE.load(Ordering::Relaxed) {
+        let fast = PULSE_ACTIVE.load(Ordering::Relaxed) || BOUNCE_ACTIVE.load(Ordering::Relaxed);
+        let interval = if fast {
             Duration::from_millis(33)
         } else {
             Duration::from_millis(250)
@@ -429,6 +434,8 @@ struct WayDictationApp {
     pulse_t: f32,
     last_tick: Option<Instant>,
     last_slow: Instant,
+    // click bounce on the play button (mirrors the Python QVariantAnimation)
+    bounce_at: Option<Instant>,
 }
 
 impl WayDictationApp {
@@ -467,6 +474,7 @@ impl WayDictationApp {
                 pulse_t: 0.0,
                 last_tick: None,
                 last_slow: Instant::now(),
+                bounce_at: None,
             },
             window::latest().map(Message::WindowId),
         )
@@ -579,6 +587,13 @@ impl WayDictationApp {
             };
         }
         self.last_tick = Some(now);
+        // the click bounce runs for 260ms, then the fast tick can idle
+        if let Some(t0) = self.bounce_at {
+            if t0.elapsed() >= Duration::from_millis(260) {
+                self.bounce_at = None;
+                BOUNCE_ACTIVE.store(false, Ordering::Relaxed);
+            }
+        }
         // housekeeping below stays on the ~250ms cadence while the pulse
         // stream ticks fast
         if now - self.last_slow < Duration::from_millis(250) {
@@ -696,6 +711,9 @@ impl WayDictationApp {
     }
 
     fn toggle(&mut self) {
+        // click feedback: pop the disc, like the Python bounce animation
+        self.bounce_at = Some(Instant::now());
+        BOUNCE_ACTIVE.store(true, Ordering::Relaxed);
         match self.state {
             "listening" | "transcribing" => {
                 if let Some(w) = &self.worker {
@@ -815,6 +833,15 @@ impl WayDictationApp {
         }
     }
 
+    /// Dynamic tooltip for the play button (mirrors the Python one).
+    fn play_tooltip(&self) -> &'static str {
+        match self.state {
+            "listening" | "transcribing" => "Pause",
+            "paused" => "Resume",
+            _ => "Start dictation",
+        }
+    }
+
     fn snapshot_settings(&mut self) {
         self.key_groq = std::env::var("GROQ_API_KEY").unwrap_or_default();
         self.key_openrouter = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
@@ -887,15 +914,23 @@ impl WayDictationApp {
 
     fn main_content(&self) -> Element<'_, Message> {
         // symmetric 30px header buttons so the title is optically centered
-        let gear = icon_button(
-            Canvas::new(GearGlyph).width(30).height(30),
-            Color::from_rgba(1.0, 1.0, 1.0, 0.09),
-            Message::OpenSettings,
+        let gear = tooltip(
+            icon_button(
+                Canvas::new(GearGlyph).width(30).height(30),
+                Color::from_rgba(1.0, 1.0, 1.0, 0.09),
+                Message::OpenSettings,
+            ),
+            text("Settings").size(11),
+            tooltip::Position::FollowCursor,
         );
-        let close = icon_button(
-            Canvas::new(CloseGlyph).width(30).height(30),
-            Color::from_rgba(1.0, 0.37, 0.42, 0.18),
-            Message::Quit,
+        let close = tooltip(
+            icon_button(
+                Canvas::new(CloseGlyph).width(30).height(30),
+                Color::from_rgba(1.0, 0.37, 0.42, 0.18),
+                Message::Quit,
+            ),
+            text("Stop and quit").size(11),
+            tooltip::Position::FollowCursor,
         );
 
         let header = row![
@@ -908,12 +943,27 @@ impl WayDictationApp {
         // canvas-painted glyph: exact geometry, rounded stroke, optically
         // nudged right (a triangle's visual mass sits on the left)
         let playing = matches!(self.state, "listening" | "transcribing");
-        let play_btn = button(Canvas::new(GlyphProgram { playing }).width(126).height(126))
+        // click bounce: the disc pops to 107% and settles, mirroring the
+        // Python QVariantAnimation keyframes (1.0 -> 1.07 @ 45% -> 1.0 over
+        // 260ms; QVariantAnimation interpolates linearly between keyframes)
+        let bounce_scale = match self.bounce_at {
+            Some(t0) => {
+                let t = (t0.elapsed().as_secs_f32() / 0.26).min(1.0);
+                if t < 0.45 {
+                    1.0 + 0.07 * (t / 0.45)
+                } else {
+                    1.0 + 0.07 * ((1.0 - t) / 0.55)
+                }
+            }
+            None => 1.0,
+        };
+        let btn = 126.0 * bounce_scale;
+        let play_btn = button(Canvas::new(GlyphProgram { playing }).width(btn).height(btn))
             .on_press(Message::Toggle)
             .padding(0)
-            .width(126)
-            .height(126)
-            .style(|_theme, status| {
+            .width(btn)
+            .height(btn)
+            .style(move |_theme, status| {
                 let (top, bottom) = match status {
                     button::Status::Hovered => (ACCENT_HOVER, ACCENT_DARK),
                     button::Status::Pressed => (ACCENT, ACCENT_PRESSED),
@@ -927,7 +977,7 @@ impl WayDictationApp {
                     ))),
                     text_color: Color::from_rgba(1.0, 1.0, 1.0, 0.96),
                     border: Border {
-                        radius: 63.0.into(),
+                        radius: (63.0 * bounce_scale).into(),
                         width: 1.0,
                         color: Color::from_rgba(1.0, 1.0, 1.0, 0.20),
                     },
@@ -935,6 +985,11 @@ impl WayDictationApp {
                     snap: false,
                 }
             });
+        let play_btn = tooltip(
+            play_btn,
+            text(self.play_tooltip()).size(11),
+            tooltip::Position::FollowCursor,
+        );
 
         // pulse ring behind the button: expanding, fading rings while
         // listening (the Python PulseRing), plus the recording glow
@@ -1015,7 +1070,11 @@ impl WayDictationApp {
                 .padding(8)
                 .width(Fill)
                 .style(field_style),
-            eye_button(self.reveal_groq, Message::ToggleRevealGroq),
+            tooltip(
+                eye_button(self.reveal_groq, Message::ToggleRevealGroq),
+                text("Show / hide").size(11),
+                tooltip::Position::FollowCursor,
+            ),
         ]
         .spacing(6)
         .align_y(Center);
@@ -1028,7 +1087,11 @@ impl WayDictationApp {
                 .padding(8)
                 .width(Fill)
                 .style(field_style),
-            eye_button(self.reveal_openrouter, Message::ToggleRevealOpenrouter),
+            tooltip(
+                eye_button(self.reveal_openrouter, Message::ToggleRevealOpenrouter),
+                text("Show / hide").size(11),
+                tooltip::Position::FollowCursor,
+            ),
         ]
         .spacing(6)
         .align_y(Center);

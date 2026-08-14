@@ -84,8 +84,12 @@ impl DictationApp {
                     break;
                 }
             }
-            self.transcribe_live(cancel);
-            n += 1;
+            // Only phrases that produced text advance the counter, matching
+            // the Python pipeline's on_phrase counting (empty API results and
+            // noise-only recordings do not).
+            if matches!(self.transcribe_live(cancel), Some(ref t) if !t.is_empty()) {
+                n += 1;
+            }
         }
         info!("Stopped.");
     }
