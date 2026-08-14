@@ -37,6 +37,11 @@ class VADConfig:
     threshold: float = 0.010
     # Frames of sustained silence before the phrase is considered finished.
     silence_frames_trigger: int = 20  # ~0.5s at 20ms frames
+    # Frames of sustained speech required before a phrase "arms". Rejects
+    # keyboard clicks and other short transients that would otherwise be
+    # recorded and sent to the API as noise (a click is 2-5 frames; real
+    # speech sustains well past this).
+    speech_frames_trigger: int = 8  # ~160ms at 20ms frames
     # Minimum silence (ms) required to end a phrase.
     min_phrase_silence_ms: float = 450.0
     # Maximum phrase length (ms) before we cut it off regardless.
@@ -58,6 +63,7 @@ class EnergyVAD:
         self.frame_ms = cfg.frame_ms
         self.frame_samples = int(cfg.sample_rate * self.frame_ms / 1000)
         self._silence_runs = 0
+        self._speech_runs = 0
 
     def is_speech(self, frame: np.ndarray) -> bool:
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))) / 32768.0
@@ -66,8 +72,12 @@ class EnergyVAD:
     def process_frame(self, frame: np.ndarray) -> str:
         """Returns 'speech', 'silence', or 'end'."""
         if self.is_speech(frame):
+            self._speech_runs += 1
             self._silence_runs = 0
-            return "speech"
+            if self._speech_runs >= self.cfg.speech_frames_trigger:
+                return "speech"
+            return "silence"  # not yet sustained enough to arm the phrase
+        self._speech_runs = 0
         self._silence_runs += 1
         if self._silence_runs >= self.cfg.silence_frames_trigger:
             return "end"
