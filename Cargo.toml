@@ -42,7 +42,9 @@ maintainer = "Samuel Ukpai <Samthesurf@users.noreply.github.com>"
 section = "utils"
 priority = "optional"
 features = ["gui"]
-depends = "$auto"
+# winit/wgpu dlopen the Wayland/X11/Vulkan/fontconfig libraries, so ldd-based
+# auto-detection only sees libasound; list the rest explicitly.
+depends = "libasound2, libwayland-client0, libxkbcommon0, libx11-6, libegl1, libgl1, libvulkan1, libfontconfig1"
 assets = [
     ["target/release/way-dictate", "usr/bin/", "755"],
     ["target/release/way-dictation-gui", "usr/bin/", "755"],
@@ -59,6 +61,7 @@ license = "MIT"
 summary = "Native Linux speech-to-text dictation (Groq / OpenRouter)"
 description = "Speak into the mic, transcribe with Groq or OpenRouter, and type into any focused app. Ships a floating GUI widget and a CLI (way-dictate)."
 features = ["gui"]
+requires = ["alsa-lib", "libwayland-client", "libxkbcommon", "libX11", "libglvnd-egl", "libglvnd-glx", "vulkan-loader", "fontconfig"]
 assets = [
     { source = "target/release/way-dictate", dest = "/usr/bin/way-dictate", mode = "755" },
     { source = "target/release/way-dictation-gui", dest = "/usr/bin/way-dictation-gui", mode = "755" },
