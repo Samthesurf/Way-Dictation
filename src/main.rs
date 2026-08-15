@@ -87,7 +87,7 @@ fn main() {
                 }
             },
             Err(e) => {
-                error!("{e}");
+                eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
@@ -97,7 +97,7 @@ fn main() {
     let transcriber = match build_transcriber(&provider, args.model.as_deref()) {
         Ok(t) => t,
         Err(e) => {
-            error!("{e}");
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     };

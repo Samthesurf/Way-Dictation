@@ -29,7 +29,7 @@ use iced_winit::program::Program as WinitProgram;
 use log::{error, info, warn};
 
 use crate::audio::{record_phrase, VadConfig};
-use crate::client::{build_transcriber, Transcriber};
+use crate::client::{build_transcriber, key_status, provider_key_var, Transcriber};
 use crate::config::{self, Settings};
 use crate::injector::{InjectMethod, Injector};
 
@@ -491,10 +491,7 @@ impl WayDictationApp {
                 Some(id) => window::drag(id),
                 None => Task::none(),
             },
-            Message::Toggle => {
-                self.toggle();
-                Task::none()
-            }
+            Message::Toggle => self.toggle(),
             Message::Quit => {
                 self.stop_worker();
                 match self.win {
@@ -502,17 +499,7 @@ impl WayDictationApp {
                     None => Task::none(),
                 }
             }
-            Message::OpenSettings => match self.settings_win {
-                Some(id) => window::gain_focus(id),
-                None => {
-                    self.snapshot_settings();
-                    // the open task must be executed or the window never
-                    // appears; the id itself is usable immediately
-                    let (id, open_task) = window::open(settings_window());
-                    self.settings_win = Some(id);
-                    open_task.discard()
-                }
-            },
+            Message::OpenSettings => self.open_settings(),
             Message::CancelSettings => match self.settings_win.take() {
                 Some(id) => window::close(id),
                 None => Task::none(),
@@ -651,7 +638,21 @@ impl WayDictationApp {
         }
     }
 
-    fn start(&mut self) {
+    fn open_settings(&mut self) -> Task<Message> {
+        match self.settings_win {
+            Some(id) => window::gain_focus(id),
+            None => {
+                self.snapshot_settings();
+                // the open task must be executed or the window never
+                // appears; the id itself is usable immediately
+                let (id, open_task) = window::open(settings_window());
+                self.settings_win = Some(id);
+                open_task.discard()
+            }
+        }
+    }
+
+    fn start(&mut self) -> Task<Message> {
         config::load_env(None);
         let provider = self.settings.provider.clone();
         let model = {
@@ -684,18 +685,33 @@ impl WayDictationApp {
                 self.worker = Some(handle);
                 self.fatal = false;
                 self.set_state("listening");
+                Task::none()
             }
             Err(e) => {
                 warn!("{e}");
                 self.fatal = true;
                 self.state = "error";
                 PULSE_ACTIVE.store(false, Ordering::Relaxed);
-                // Mirror the Python key-missing wording.
-                let msg = e.to_string();
-                let key = msg.split(" not set").next().unwrap_or("the API key");
-                self.status = "API key missing".to_string();
-                self.hint =
-                    format!("Add {key} to the .env file in the project folder, then press play again.");
+                self.hint = e.to_string();
+                // Distinguish a missing key from other setup failures so a
+                // first-time user gets the "get a key" guidance and is
+                // dropped straight into Settings to paste it.
+                let missing_key = provider_key_var(&provider)
+                    .map(|var| {
+                        let ks = key_status();
+                        if var == "GROQ_API_KEY" {
+                            !ks.groq
+                        } else {
+                            !ks.openrouter
+                        }
+                    })
+                    .unwrap_or(false);
+                if missing_key {
+                    self.status = "API key missing".to_string();
+                    return self.open_settings();
+                }
+                self.status = "Setup error".to_string();
+                Task::none()
             }
         }
     }
@@ -710,7 +726,7 @@ impl WayDictationApp {
         self.set_state("ready");
     }
 
-    fn toggle(&mut self) {
+    fn toggle(&mut self) -> Task<Message> {
         // click feedback: pop the disc, like the Python bounce animation
         self.bounce_at = Some(Instant::now());
         BOUNCE_ACTIVE.store(true, Ordering::Relaxed);
@@ -720,12 +736,14 @@ impl WayDictationApp {
                     let _ = w.cmd_tx.send(Cmd::Pause);
                     self.set_state("paused");
                 }
+                Task::none()
             }
             "paused" => {
                 if let Some(w) = &self.worker {
                     let _ = w.cmd_tx.send(Cmd::Resume);
                     self.set_state("listening");
                 }
+                Task::none()
             }
             _ => self.start(),
         }
@@ -1139,6 +1157,16 @@ impl WayDictationApp {
         .color(FAINT)
         .width(Fill);
 
+        // First-run guidance: where to obtain a key when neither is set.
+        let get_keys_note = text(
+            "No keys yet? Get a free Groq key at https://console.groq.com/keys, or an \
+             OpenRouter key at https://openrouter.ai/keys, then paste it into the matching \
+             field above.",
+        )
+        .size(11)
+        .color(FAINT)
+        .width(Fill);
+
         let engine_note = text(
             "GPT Transcribe and Gemini use the OpenRouter key; Groq Whisper uses the Groq key. \
              Changes apply the next time you press play.",
@@ -1171,6 +1199,7 @@ impl WayDictationApp {
             label_row("Groq API key", groq_field),
             label_row("OpenRouter API key", or_field),
             keys_note,
+            get_keys_note,
             section_label("ENGINE", 12.0),
             label_row("Provider", provider_field),
             label_row("Language", language_field),

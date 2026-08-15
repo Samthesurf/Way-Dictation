@@ -57,10 +57,79 @@ fn http_client() -> reqwest::blocking::Client {
         .expect("failed to build HTTP client")
 }
 
+/// Whether each API key is present and non-empty in the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyStatus {
+    pub groq: bool,
+    pub openrouter: bool,
+}
+
+pub fn key_status() -> KeyStatus {
+    let set = |name: &str| {
+        std::env::var(name)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+    KeyStatus {
+        groq: set("GROQ_API_KEY"),
+        openrouter: set("OPENROUTER_API_KEY"),
+    }
+}
+
+/// Which key env var a provider needs (`None` for an unknown provider).
+pub fn provider_key_var(provider: &str) -> Option<&'static str> {
+    match provider {
+        "groq" => Some("GROQ_API_KEY"),
+        "gemini" | "openrouter" | "gpt-transcribe" | "gpttranscribe" | "gpt" => {
+            Some("OPENROUTER_API_KEY")
+        }
+        _ => None,
+    }
+}
+
+const GROQ_KEY_URL: &str = "https://console.groq.com/keys";
+const OPENROUTER_KEY_URL: &str = "https://openrouter.ai/keys";
+
+/// Friendly "what to do next" text when a provider's key is missing: if the
+/// other key is present, point the user at switching provider; if neither is
+/// present, tell them where to get one.
+fn missing_key_message(needed: &str, other_present: bool) -> String {
+    match (needed, other_present) {
+        ("GROQ_API_KEY", true) => format!(
+            "No Groq API key found ({needed} is not set). You already have an OpenRouter key: \
+             open Settings (gear icon) and switch Provider to \"GPT Transcribe (paid)\" or \
+             \"Gemini (OpenRouter)\", or add a free Groq key at {GROQ_KEY_URL}."
+        ),
+        ("OPENROUTER_API_KEY", true) => format!(
+            "No OpenRouter API key found ({needed} is not set). You already have a Groq key: \
+             open Settings (gear icon) and switch Provider to \"Groq Whisper (free)\", or add \
+             an OpenRouter key at {OPENROUTER_KEY_URL}."
+        ),
+        (_, false) => format!(
+            "No API keys found. You need a Groq or OpenRouter key to transcribe. Get a free \
+             Groq key at {GROQ_KEY_URL} (free tier, no card required) or an OpenRouter key at \
+             {OPENROUTER_KEY_URL}, then open Settings (gear icon) in the app, paste it into \
+             the matching field, and press play again."
+        ),
+        _ => unreachable!("other_present is only true for the two real key vars"),
+    }
+}
+
 fn require_key(name: &str) -> Result<String> {
-    std::env::var(name).map_err(|_| {
-        anyhow!("{name} not set. Add it to .env, save it in the GUI settings, or export it.")
-    })
+    if let Ok(k) = std::env::var(name) {
+        if !k.trim().is_empty() {
+            return Ok(k);
+        }
+    }
+    let other = if name == "GROQ_API_KEY" {
+        "OPENROUTER_API_KEY"
+    } else {
+        "GROQ_API_KEY"
+    };
+    let other_present = std::env::var(other)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    Err(anyhow!(missing_key_message(name, other_present)))
 }
 
 fn truncate(s: &str, n: usize) -> &str {
@@ -455,5 +524,42 @@ mod tests {
         assert!(build_transcriber("gpttranscribe", None).is_err());
         assert!(build_transcriber("openrouter", None).is_err());
         assert!(build_transcriber("bogus", None).is_err());
+    }
+
+    #[test]
+    fn provider_key_var_mapping() {
+        assert_eq!(provider_key_var("groq"), Some("GROQ_API_KEY"));
+        assert_eq!(
+            provider_key_var("gpt-transcribe"),
+            Some("OPENROUTER_API_KEY")
+        );
+        assert_eq!(provider_key_var("gpt"), Some("OPENROUTER_API_KEY"));
+        assert_eq!(provider_key_var("gemini"), Some("OPENROUTER_API_KEY"));
+        assert_eq!(provider_key_var("openrouter"), Some("OPENROUTER_API_KEY"));
+        assert_eq!(provider_key_var("bogus"), None);
+    }
+
+    #[test]
+    fn missing_key_message_recommends_switching_provider() {
+        let m = missing_key_message("GROQ_API_KEY", true);
+        assert!(m.contains("GROQ_API_KEY is not set"));
+        assert!(m.contains("OpenRouter key"));
+        assert!(!m.contains("Groq Whisper (free)"));
+        assert!(m.contains("GPT Transcribe (paid)"));
+        assert!(m.contains(GROQ_KEY_URL));
+
+        let m2 = missing_key_message("OPENROUTER_API_KEY", true);
+        assert!(m2.contains("OPENROUTER_API_KEY is not set"));
+        assert!(m2.contains("Groq key"));
+        assert!(m2.contains("Groq Whisper (free)"));
+        assert!(m2.contains(OPENROUTER_KEY_URL));
+    }
+
+    #[test]
+    fn missing_key_message_has_get_key_urls_when_none_present() {
+        let m = missing_key_message("GROQ_API_KEY", false);
+        assert!(m.contains(GROQ_KEY_URL));
+        assert!(m.contains(OPENROUTER_KEY_URL));
+        assert!(m.contains("press play again"));
     }
 }
