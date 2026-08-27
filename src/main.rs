@@ -35,7 +35,7 @@ struct Args {
     #[arg(long)]
     model: Option<String>,
 
-    /// Transcription backend: gpt-transcribe | groq | gemini.
+    /// Transcription backend: gpt-transcribe | groq | gemini | gemini-live.
     #[arg(long, default_value = "gpt-transcribe")]
     provider: String,
 
@@ -55,6 +55,9 @@ struct Args {
 fn normalize_provider(p: &str) -> String {
     match p.to_ascii_lowercase().as_str() {
         "openrouter" | "gemini" => "gemini".to_string(),
+        "gemini-live" | "gemini-live-transcribe" | "glive" | "geminilive" => {
+            "gemini-live".to_string()
+        }
         "gpt-transcribe" | "gpttranscribe" | "gpt" => "gpt-transcribe".to_string(),
         "groq" => "groq".to_string(),
         other => other.to_string(),

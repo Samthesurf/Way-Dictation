@@ -182,9 +182,12 @@ way-dictate --once --method wtype   # or ydotool | xdotool
 | `--provider gpt-transcribe` (**default**) | OpenRouter STT | `openai/gpt-transcribe` | Best on this user's voice; accurate + complete. Paid (~$0.0045/min) |
 | `--provider groq` | Groq Whisper | `whisper-large-v3-turbo` | Free, fast; but hallucinates "thank you" on background noise |
 | `--provider gemini` (alias: `openrouter`) | OpenRouter Gemini | `google/gemini-3.1-flash-lite` | General LLM; hallucinates over silence, can drop audio |
+| `--provider gemini-live` (alias: `glive`) | Google Gemini Live API | `gemini-3.5-transcribe-live` | Low-latency WebSocket STT, accurate on this user's voice, free tier available |
 
 `gpt-transcribe` and `gemini` use `OPENROUTER_API_KEY`; `groq` uses
-`GROQ_API_KEY`. Both are read from `.env` (or the GUI's saved keys).
+`GROQ_API_KEY`; `gemini-live` uses `GEMINI_API_KEY` (from
+<https://aistudio.google.com/apikey>). All are read from `.env` (or the GUI's
+saved keys).
 
 ### Improving completeness (audio loss)
 

@@ -73,7 +73,7 @@ impl std::fmt::Display for ProviderOpt {
     }
 }
 
-const PROVIDERS: [ProviderOpt; 3] = [
+const PROVIDERS: [ProviderOpt; 4] = [
     ProviderOpt {
         label: "GPT Transcribe (paid)",
         value: "gpt-transcribe",
@@ -85,6 +85,10 @@ const PROVIDERS: [ProviderOpt; 3] = [
     ProviderOpt {
         label: "Gemini (OpenRouter)",
         value: "gemini",
+    },
+    ProviderOpt {
+        label: "Gemini 3.5 Transcribe Live",
+        value: "gemini-live",
     },
 ];
 
@@ -351,8 +355,10 @@ enum Message {
     Position(Option<Point>),
     KeyGroq(String),
     KeyOpenrouter(String),
+    KeyGemini(String),
     ToggleRevealGroq,
     ToggleRevealOpenrouter,
+    ToggleRevealGemini,
     DraftProvider(ProviderOpt),
     DraftLanguage(LanguageOpt),
     DraftModel(String),
@@ -419,8 +425,10 @@ struct WayDictationApp {
     // settings dialog fields
     key_groq: String,
     key_openrouter: String,
+    key_gemini: String,
     reveal_groq: bool,
     reveal_openrouter: bool,
+    reveal_gemini: bool,
     draft_provider: ProviderOpt,
     draft_language: LanguageOpt,
     draft_model: String,
@@ -462,8 +470,10 @@ impl WayDictationApp {
                 settings_win: None,
                 key_groq: String::new(),
                 key_openrouter: String::new(),
+                key_gemini: String::new(),
                 reveal_groq: false,
                 reveal_openrouter: false,
+                reveal_gemini: false,
                 draft_provider,
                 draft_language,
                 draft_model,
@@ -534,12 +544,20 @@ impl WayDictationApp {
                 self.key_openrouter = s;
                 Task::none()
             }
+            Message::KeyGemini(s) => {
+                self.key_gemini = s;
+                Task::none()
+            }
             Message::ToggleRevealGroq => {
                 self.reveal_groq = !self.reveal_groq;
                 Task::none()
             }
             Message::ToggleRevealOpenrouter => {
                 self.reveal_openrouter = !self.reveal_openrouter;
+                Task::none()
+            }
+            Message::ToggleRevealGemini => {
+                self.reveal_gemini = !self.reveal_gemini;
                 Task::none()
             }
             Message::DraftProvider(p) => {
@@ -699,10 +717,10 @@ impl WayDictationApp {
                 let missing_key = provider_key_var(&provider)
                     .map(|var| {
                         let ks = key_status();
-                        if var == "GROQ_API_KEY" {
-                            !ks.groq
-                        } else {
-                            !ks.openrouter
+                        match var {
+                            "GROQ_API_KEY" => !ks.groq,
+                            "GEMINI_API_KEY" => !ks.gemini,
+                            _ => !ks.openrouter,
                         }
                     })
                     .unwrap_or(false);
@@ -863,6 +881,7 @@ impl WayDictationApp {
     fn snapshot_settings(&mut self) {
         self.key_groq = std::env::var("GROQ_API_KEY").unwrap_or_default();
         self.key_openrouter = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+        self.key_gemini = std::env::var("GEMINI_API_KEY").unwrap_or_default();
         self.draft_provider = provider_opt(&self.settings.provider);
         self.draft_language = language_opt(&self.settings.language);
         self.draft_model = self.settings.model.clone();
@@ -876,10 +895,11 @@ impl WayDictationApp {
         self.settings.model = self.draft_model.clone();
         self.settings.always_on_top = self.draft_ontop;
         config::save_settings(&self.settings);
-        config::save_keys(&self.key_groq, &self.key_openrouter);
+        config::save_keys(&self.key_groq, &self.key_openrouter, &self.key_gemini);
         // Make freshly saved keys visible to the next `build_transcriber`.
         set_env_or_remove("GROQ_API_KEY", &self.key_groq);
         set_env_or_remove("OPENROUTER_API_KEY", &self.key_openrouter);
+        set_env_or_remove("GEMINI_API_KEY", &self.key_gemini);
 
         let mut tasks: Vec<Task<Message>> = Vec::new();
         if changed_ontop {
@@ -1119,6 +1139,24 @@ impl WayDictationApp {
         .spacing(6)
         .align_y(Center);
 
+        let gemini_field = row![
+            text_input("Not set", &self.key_gemini)
+                .on_input(Message::KeyGemini)
+                .secure(!self.reveal_gemini)
+                .size(13)
+                .padding(8)
+                .width(Fill)
+                .style(field_style),
+            tooltip(
+                eye_button(self.reveal_gemini, Message::ToggleRevealGemini),
+                text("Show / hide").size(11),
+                tooltip::Position::FollowCursor,
+            )
+            .style(tooltip_style),
+        ]
+        .spacing(6)
+        .align_y(Center);
+
         let provider_field = pick_list(&PROVIDERS[..], Some(self.draft_provider), Message::DraftProvider)
             .width(Fill)
             .text_size(13)
@@ -1198,6 +1236,7 @@ impl WayDictationApp {
             section_label("API KEYS", 0.0),
             label_row("Groq API key", groq_field),
             label_row("OpenRouter API key", or_field),
+            label_row("Gemini API key", gemini_field),
             keys_note,
             get_keys_note,
             section_label("ENGINE", 12.0),
