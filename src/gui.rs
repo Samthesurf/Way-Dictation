@@ -2066,7 +2066,9 @@ impl WinitProgram for GuiProgram {
 
 fn settings_window() -> window::Settings {
     window::Settings {
-        size: Size::new(380.0, 600.0),
+        // tall enough for the three API-key rows added with gemini-live;
+        // a shorter window crushes the trailing Cancel/Save row
+        size: Size::new(380.0, 680.0),
         position: Position::Centered,
         decorations: true,
         // opaque: a decorated dialog must never let the widget behind it
