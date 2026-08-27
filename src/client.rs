@@ -21,10 +21,13 @@ use crate::wav;
 
 pub const DEFAULT_GROQ_MODEL: &str = "whisper-large-v3-turbo";
 pub const DEFAULT_GEMINI_MODEL: &str = "google/gemini-3.1-flash-lite";
+pub const DEFAULT_GEMINI_LIVE_MODEL: &str = "gemini-3.5-transcribe-live";
 pub const DEFAULT_GPT_TRANSCRIBE_MODEL: &str = "openai/gpt-transcribe";
 
 const GROQ_BASE: &str = "https://api.groq.com/openai/v1";
 const OPENROUTER_BASE: &str = "https://openrouter.ai/api/v1";
+const GEMINI_LIVE_WS: &str =
+    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 /// Prompt that asks a general LLM to return only the verbatim transcript and to
 /// stay silent when there is no intelligible speech.
@@ -62,6 +65,7 @@ fn http_client() -> reqwest::blocking::Client {
 pub struct KeyStatus {
     pub groq: bool,
     pub openrouter: bool,
+    pub gemini: bool,
 }
 
 pub fn key_status() -> KeyStatus {
@@ -73,6 +77,7 @@ pub fn key_status() -> KeyStatus {
     KeyStatus {
         groq: set("GROQ_API_KEY"),
         openrouter: set("OPENROUTER_API_KEY"),
+        gemini: set("GEMINI_API_KEY"),
     }
 }
 
@@ -83,12 +88,14 @@ pub fn provider_key_var(provider: &str) -> Option<&'static str> {
         "gemini" | "openrouter" | "gpt-transcribe" | "gpttranscribe" | "gpt" => {
             Some("OPENROUTER_API_KEY")
         }
+        "gemini-live" | "gemini-live-transcribe" | "glive" => Some("GEMINI_API_KEY"),
         _ => None,
     }
 }
 
 const GROQ_KEY_URL: &str = "https://console.groq.com/keys";
 const OPENROUTER_KEY_URL: &str = "https://openrouter.ai/keys";
+const GEMINI_KEY_URL: &str = "https://aistudio.google.com/apikey";
 
 /// Friendly "what to do next" text when a provider's key is missing: if the
 /// other key is present, point the user at switching provider; if neither is
@@ -105,13 +112,18 @@ fn missing_key_message(needed: &str, other_present: bool) -> String {
              open Settings (gear icon) and switch Provider to \"Groq Whisper (free)\", or add \
              an OpenRouter key at {OPENROUTER_KEY_URL}."
         ),
+        ("GEMINI_API_KEY", true) => format!(
+            "No Gemini API key found ({needed} is not set). Switch Provider to \
+             \"GPT Transcribe (paid)\", \"Groq Whisper (free)\", or \"Gemini (OpenRouter)\" \
+             with one of your existing keys, or add a Gemini key at {GEMINI_KEY_URL}."
+        ),
         (_, false) => format!(
             "No API keys found. You need a Groq or OpenRouter key to transcribe. Get a free \
              Groq key at {GROQ_KEY_URL} (free tier, no card required) or an OpenRouter key at \
              {OPENROUTER_KEY_URL}, then open Settings (gear icon) in the app, paste it into \
              the matching field, and press play again."
         ),
-        _ => unreachable!("other_present is only true for the two real key vars"),
+        _ => unreachable!("other_present is only true for the real key vars"),
     }
 }
 
@@ -464,6 +476,331 @@ impl Transcriber for GeminiTranscriber {
 }
 
 // ---------------------------------------------------------------------------
+// Gemini Live transcription (gemini-3.5-transcribe-live via Live API WS)
+// ---------------------------------------------------------------------------
+
+/// Live transcription over the Gemini Live API WebSocket.
+///
+/// Protocol (per ai.google.dev/gemini-api/docs/live-api/live-transcribe):
+/// 1. Open `BidiGenerateContent?key=API_KEY`.
+/// 2. Send a setup message: model `gemini-3.5-transcribe-live`,
+///    `responseModalities: ["TEXT"]`, optional language hints.
+/// 3. Stream raw 16-bit PCM mono 16 kHz audio in ~100 ms chunks as
+///    `realtimeInput.audio` (base64, mime `audio/pcm;rate=16000`).
+/// 4. Signal the end of audio with `realtimeInput.audioStreamEnd: true`.
+/// 5. Read `serverContent.inputTranscription.text` events for finalized text.
+///
+/// The app already records 16 kHz mono i16 PCM, which is exactly the format
+/// this API consumes, so the WAV payload data is sent as-is.
+pub struct GeminiLiveTranscriber {
+    api_key: String,
+    model: String,
+    max_chunk_ms: u32,
+}
+
+impl GeminiLiveTranscriber {
+    pub fn new(api_key: &str, model: &str) -> Self {
+        GeminiLiveTranscriber {
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            max_chunk_ms: 100,
+        }
+    }
+
+    /// Send one JSON message over the WebSocket.
+    fn send_json(&self, ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, value: &Value) -> Result<()> {
+        use tungstenite::Message;
+        let raw = serde_json::to_string(value).context("serializing Live API message")?;
+        log::debug!("Gemini Live send: {}", truncate(&raw, 300));
+        ws.send(Message::Text(raw.into()))
+            .context("sending to Gemini Live API")
+    }
+
+    /// Read messages until the finalized transcription for this audio arrives
+    /// (or until a timeout / session end). Returns the collected transcript
+    /// text, and an error surface for setup failures.
+    fn collect_transcript(
+        &self,
+        ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+        deadline: std::time::Instant,
+    ) -> Result<String> {
+        use tungstenite::Message;
+
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            if std::time::Instant::now() > deadline {
+                log::debug!("Gemini Live collect: deadline reached, parts={}", parts.len());
+                break;
+            }
+            let msg = match ws.read() {
+                Ok(m) => m,
+                Err(e) => {
+                    // A blocked read just means no more messages in flight;
+                    // that is a valid end condition once audio is done.
+                    let etxt = e.to_string();
+                    if etxt.contains("timed out")
+                        || etxt.contains("WouldBlock")
+                        || etxt.contains("Resource temporarily unavailable")
+                        || etxt.contains("Connection reset")
+                    {
+                        break;
+                    }
+                    return Err(anyhow!("reading from Gemini Live API: {e}"));
+                }
+            };
+            match msg {
+                Message::Text(t) => {
+                    let text: &str = t.as_str();
+                    log::debug!("Gemini Live recv(text): {}", truncate(text, 200));
+                    let v: Value = match serde_json::from_str(text) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if let Some(err) = v.get("error") {
+                        return Err(anyhow!(
+                            "Gemini Live API error: {}",
+                            truncate(&err.to_string(), 400)
+                        ));
+                    }
+                    if let Some(sc) = v.get("serverContent") {
+                        if let Some(it) = sc.get("inputTranscription") {
+                            if let Some(s) = it.get("text").and_then(|x| x.as_str()) {
+                                if !s.trim().is_empty() {
+                                    parts.push(s.trim().to_string());
+                                }
+                            }
+                        }
+                        // The server marks the end of the turn explicitly;
+                        // nothing more will be finalized after this.
+                        if sc.get("generationComplete").and_then(|x| x.as_bool()) == Some(true) {
+                            break;
+                        }
+                        // Legacy stop signal (older sessions used this after
+                        // audioStreamEnd before generationComplete was added).
+                        if sc.get("turnComplete").and_then(|x| x.as_bool()) == Some(true) {
+                            break;
+                        }
+                    }
+                }
+                // The Gemini Live API sends all response frames as Binary
+                // (verified Aug 2026), including setupComplete, interim
+                // transcripts, and the finalized transcript.
+                Message::Binary(b) => {
+                    let text: String = String::from_utf8_lossy(&b).into_owned();
+                    log::debug!("Gemini Live recv(binary): {}", truncate(&text, 200));
+                    let v: Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if let Some(err) = v.get("error") {
+                        return Err(anyhow!(
+                            "Gemini Live API error: {}",
+                            truncate(&err.to_string(), 400)
+                        ));
+                    }
+                    if let Some(sc) = v.get("serverContent") {
+                        if let Some(it) = sc.get("inputTranscription") {
+                            if let Some(s) = it.get("text").and_then(|x| x.as_str()) {
+                                if !s.trim().is_empty() {
+                                    parts.push(s.trim().to_string());
+                                }
+                            }
+                        }
+                        if sc.get("generationComplete").and_then(|x| x.as_bool()) == Some(true) {
+                            break;
+                        }
+                        if sc.get("turnComplete").and_then(|x| x.as_bool()) == Some(true) {
+                            break;
+                        }
+                    }
+                }
+                Message::Ping(p) => {
+                    let _ = ws.send(Message::Pong(p));
+                }
+                Message::Close(c) => {
+                    log::debug!("Gemini Live: server closed: {c:?}");
+                    break;
+                }
+                Message::Pong(_) => {}
+                _ => {}
+            }
+        }
+        if parts.is_empty() {
+            bail!("Gemini Live returned no transcript for this audio");
+        }
+        Ok(parts.join(" "))
+    }
+
+    /// Stream raw PCM (16-bit LE mono) to the WebSocket in ~100ms chunks,
+    /// paced at real time. The Live API only finalizes transcripts when audio
+    /// arrives at its natural cadence; dumping everything at once yields
+    /// interim text but never a finalized turn.
+    fn stream_pcm(
+        &self,
+        ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+        pcm: &[u8],
+    ) -> Result<()> {
+        use base64::Engine as _;
+        let frame_bytes = 2usize; // 16-bit
+        let sample_rate = 16000u32;
+        let chunk_frames = (sample_rate as usize * self.max_chunk_ms as usize / 1000).max(1);
+        let chunk_bytes = chunk_frames * frame_bytes;
+        let mut i = 0usize;
+        while i < pcm.len() {
+            let end = (i + chunk_bytes).min(pcm.len());
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&pcm[i..end]);
+            let msg = json!({
+                "realtimeInput": {
+                    "audio": {
+                        "data": b64,
+                        "mimeType": "audio/pcm;rate=16000"
+                    }
+                }
+            });
+            self.send_json(ws, &msg)?;
+            i = end;
+            std::thread::sleep(std::time::Duration::from_millis(self.max_chunk_ms as u64));
+        }
+        // Signal the end of the audio stream.
+        let end_msg = json!({ "realtimeInput": { "audioStreamEnd": true } });
+        self.send_json(ws, &end_msg)
+    }
+}
+
+impl Transcriber for GeminiLiveTranscriber {
+    fn transcribe(&self, wav: &[u8], language: Option<&str>) -> Result<String> {
+        // Parse the WAV to extract raw PCM. The Live API requires 16 kHz mono
+        // 16-bit PCM; our recorder produces exactly that, so the fmt/data is
+        // sent verbatim. Anything else (e.g. converted file audio) must be
+        // resampled by the caller or rejected here with a clear message.
+        let parsed = wav::parse_wav(wav).context("parsing WAV for Gemini Live")?;
+        if parsed.sample_rate != 16000 || parsed.channels != 1 || parsed.bits_per_sample != 16 {
+            bail!(
+                "Gemini Live requires 16 kHz mono 16-bit PCM audio, got {} Hz / {} ch / {}-bit. \
+                 Re-record or convert: ffmpeg -i in.wav -ar 16000 -ac 1 -acodec pcm_s16le out.wav",
+                parsed.sample_rate,
+                parsed.channels,
+                parsed.bits_per_sample,
+            );
+        }
+
+        let url = format!(
+            "{GEMINI_LIVE_WS}?key={}",
+            // API keys are URL-safe enough for query strings; encode defensively.
+            urlencode(&self.api_key)
+        );
+        let mut ws = connect_gemini_live(&url)?;
+        // Give the server a bounded window to answer; long dictation phrases
+        // (up to minutes) still complete well inside a generous deadline.
+        // MaybeTlsStream is an enum; reach the underlying TCP socket per variant.
+        // (No cfg gates here: our crate only builds this with the tls feature
+        // active, and both variants exist in the compiled dependency.)
+        let timeout = Some(std::time::Duration::from_secs(65));
+        match ws.get_ref() {
+            tungstenite::stream::MaybeTlsStream::Plain(t) => {
+                let _ = t.set_read_timeout(timeout);
+            }
+            tungstenite::stream::MaybeTlsStream::Rustls(s) => {
+                // `StreamOwned` exposes its socket as the public `sock` field.
+                let _ = s.sock.set_read_timeout(timeout);
+            }
+            _ => {}
+        }
+        log::debug!("Gemini Live: WebSocket connected");
+
+        // Setup message: dedicated transcription model, text-only modality.
+        let mut lang_codes: Vec<Value> = Vec::new();
+        if let Some(lang) = language {
+            lang_codes.push(json!(lang));
+        }
+        let setup = json!({
+            "setup": {
+                "model": format!("models/{}", self.model),
+                "generationConfig": {
+                    "responseModalities": ["TEXT"]
+                },
+                "inputAudioTranscription": {
+                    "languageCodes": lang_codes
+                }
+            }
+        });
+        self.send_json(&mut ws, &setup)?;
+
+        // Stream the audio, then read final transcripts.
+        self.stream_pcm(&mut ws, &parsed.data)?;
+        // The server finalizes a turn a few seconds after audio ends; give
+        // short clips a generous window (the probe showed ~5-10s worst case).
+        let settle = std::time::Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + settle;
+        let text = self.collect_transcript(&mut ws, deadline)?;
+        let _ = ws.close(None);
+        Ok(text)
+    }
+}
+
+/// Percent-encode a value for use inside a URL query (keys are base64-ish;
+/// this is defensive for any `=`, `+`, `/` characters).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Connect to the Gemini Live WebSocket, preferring IPv4.
+///
+/// Observed behaviour of the Live API endpoint (verified Aug 2026): the
+/// service accepts TLS on both address families but only ever answers
+/// transcript messages on IPv4. A connection pinned to an IPv6 AAAA record
+/// completes the handshake and then receives nothing. Resolve the hostname
+/// ourselves, pick an IPv4 socket address, and let `client_tls` handle the
+/// TLS + WebSocket upgrade (SNI still comes from the hostname in the URL, so
+/// certificate validation is unaffected).
+fn connect_gemini_live(url: &str) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>> {
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    let uri = url
+        .parse::<tungstenite::http::Uri>()
+        .map_err(|e| anyhow!("invalid Live API URL: {e}"))?;
+    let host = uri
+        .host()
+        .ok_or_else(|| anyhow!("Live API URL has no host"))?
+        .to_string();
+    let port = uri.port_u16().unwrap_or(443);
+
+    let mut addrs: Vec<SocketAddr> = format!("{host}:{port}")
+        .to_socket_addrs()
+        .context("resolving Gemini Live API host")?
+        .collect();
+    // Prefer IPv4 (see doc comment above); keep IPv6 as a fallback.
+    addrs.sort_by_key(|a| matches!(a, SocketAddr::V6(_)));
+
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(20)) {
+            Ok(stream) => {
+                log::debug!("Gemini Live: connected to {addr}");
+                let (ws, _resp) = tungstenite::client_tls(url, stream)
+                    .map_err(|e| anyhow!("Gemini Live WebSocket handshake: {e}"))?;
+                return Ok(ws);
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(anyhow!(
+        "could not connect to Gemini Live API: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "no addresses".to_string())
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -484,6 +821,13 @@ pub fn build_transcriber(provider: &str, model: Option<&str>) -> Result<Box<dyn 
                 model.unwrap_or(DEFAULT_GEMINI_MODEL),
             )))
         }
+        "gemini-live" | "gemini-live-transcribe" | "glive" => {
+            let key = require_key("GEMINI_API_KEY")?;
+            Ok(Box::new(GeminiLiveTranscriber::new(
+                &key,
+                model.unwrap_or(DEFAULT_GEMINI_LIVE_MODEL),
+            )))
+        }
         "gpt-transcribe" | "gpttranscribe" | "gpt" => {
             let key = require_key("OPENROUTER_API_KEY")?;
             Ok(Box::new(OpenRouterSttTranscriber::new(
@@ -492,7 +836,7 @@ pub fn build_transcriber(provider: &str, model: Option<&str>) -> Result<Box<dyn 
             )))
         }
         _ => {
-            bail!("Unknown provider: {provider:?} (expected 'groq', 'gemini', or 'gpt-transcribe')")
+            bail!("Unknown provider: {provider:?} (expected 'groq', 'gemini', 'gemini-live', or 'gpt-transcribe')")
         }
     }
 }

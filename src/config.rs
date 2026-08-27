@@ -108,7 +108,7 @@ pub fn save_settings(settings: &Settings) {
 }
 
 /// Persist API keys from the settings dialog to keys.env (0600).
-pub fn save_keys(groq: &str, openrouter: &str) {
+pub fn save_keys(groq: &str, openrouter: &str, gemini: &str) {
     if let Err(e) = std::fs::create_dir_all(config_dir()) {
         log::warn!("could not create config dir: {e}");
         return;
@@ -119,6 +119,9 @@ pub fn save_keys(groq: &str, openrouter: &str) {
     }
     if !openrouter.is_empty() {
         lines.push_str(&format!("OPENROUTER_API_KEY={openrouter}\n"));
+    }
+    if !gemini.is_empty() {
+        lines.push_str(&format!("GEMINI_API_KEY={gemini}\n"));
     }
     let path = key_file();
     if let Err(e) = write_private(&path, lines.as_bytes()) {
