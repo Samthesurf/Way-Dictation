@@ -1,6 +1,6 @@
 """Transcription clients.
 
-Three backends:
+Four backends:
 - `GroqTranscriber`: Groq's hosted `whisper-large-v3-turbo` (free tier) via the
   official SDK. A purpose-built STT model, extremely fast on Groq's LPU.
 - `GeminiTranscriber`: a general purpose LLM (Gemini 3.1 Flash Lite) routed
@@ -9,12 +9,17 @@ Three backends:
 - `OpenRouterSttTranscriber`: dedicated STT models on OpenRouter's
   `/audio/transcriptions` endpoint (e.g. `openai/gpt-transcribe`). Proper STT,
   avoids the LLM hallucination/audio-drop problems.
+- `GeminiLiveTranscriber`: Google's `gemini-3.5-transcribe-live` over the Live
+  API WebSocket. Low-latency dedicated STT with utterance-level language
+  detection. Uses GEMINI_API_KEY (https://aistudio.google.com/apikey).
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -30,7 +35,13 @@ DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo"
 DEFAULT_GEMINI_MODEL = "google/gemini-3.1-flash-lite"
 # OpenRouter slug for GPT Transcribe (dedicated STT, 3.3% WER, $0.0045/min).
 DEFAULT_GPT_TRANSCRIBE_MODEL = "openai/gpt-transcribe"
+# Google's dedicated low-latency streaming STT model (Live API).
+DEFAULT_GEMINI_LIVE_MODEL = "gemini-3.5-transcribe-live"
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+GEMINI_LIVE_WS = (
+    "wss://generativelanguage.googleapis.com/ws/"
+    "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+)
 
 # Prompt that asks Gemini to return only the transcript, verbatim, and to stay
 # silent when there is no intelligible speech (LLM transcribers hallucinate
@@ -374,13 +385,151 @@ class OpenRouterSttTranscriber:
             return self.transcribe(f.read(), language=language)
 
 
+class GeminiLiveTranscriber:
+    """Google `gemini-3.5-transcribe-live` over the Live API WebSocket.
+
+    Dedicated low-latency STT. Requires GEMINI_API_KEY
+    (https://aistudio.google.com/apikey).
+
+    Protocol (per ai.google.dev/gemini-api/docs/live-api/live-transcribe):
+    1. Open the BidiGenerateContent WebSocket with ?key=API_KEY.
+    2. Send a setup message (responseModalities: ["TEXT"], optional
+       languageCodes).
+    3. Stream raw 16-bit mono 16 kHz PCM in ~100 ms chunks, paced at real
+       time; the API only finalizes a turn when audio arrives at its natural
+       cadence.
+    4. Signal end of audio with realtimeInput.audioStreamEnd.
+    5. Collect finalized `serverContent.inputTranscription.text` events.
+       All server frames (including setupComplete) arrive as *binary*
+       WebSocket frames, not text (verified Aug 2026).
+    """
+
+    def __init__(self, model: str = DEFAULT_GEMINI_LIVE_MODEL):
+        self.api_key = _require_key(
+            "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY")
+        )
+        self.model = model
+
+    def transcribe(self, wav_bytes: bytes, language: str | None = None) -> str:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as w:
+            if (
+                w.getframerate() != 16000
+                or w.getnchannels() != 1
+                or w.getsampwidth() != 2
+            ):
+                raise RuntimeError(
+                    "Gemini Live requires 16 kHz mono 16-bit PCM audio, got "
+                    f"{w.getframerate()} Hz / {w.getnchannels()} ch / "
+                    f"{w.getsampwidth() * 8}-bit. Re-record or convert: "
+                    "ffmpeg -i in.wav -ar 16000 -ac 1 -acodec pcm_s16le out.wav"
+                )
+            pcm = w.readframes(w.getnframes())
+        return asyncio.run(self._run(pcm, language))
+
+    async def _run(self, pcm: bytes, language: str | None) -> str:
+        import websockets
+
+        ws_url = f"{GEMINI_LIVE_WS}?key={self.api_key}"
+        # Prefer IPv4: the Live API never answers over IPv6 (verified Aug 2026:
+        # the IPv6 TLS handshake completes, then the server stays silent).
+        import socket
+        infos = socket.getaddrinfo(
+            "generativelanguage.googleapis.com", 443, socket.AF_INET
+        )
+        addrs: list[tuple[str, int]] = sorted(
+            {info[4] for info in infos}  # type: ignore[arg-type]
+        )
+        if not addrs:
+            addrs = [
+                info[4]  # type: ignore[misc]
+                for info in socket.getaddrinfo(
+                    "generativelanguage.googleapis.com", 443
+                )
+            ]
+        last_err: Exception | None = None
+        sock = None
+        for addr in addrs:
+            try:
+                sock = socket.create_connection(addr, timeout=20)
+                break
+            except OSError as e:
+                last_err = e
+        if sock is None:
+            raise RuntimeError(
+                f"Could not connect to Gemini Live API: {last_err}"
+            )
+
+        async with websockets.connect(
+            ws_url, sock=sock, max_size=10_000_000, open_timeout=20
+        ) as ws:
+            setup: dict = {
+                "setup": {
+                    "model": f"models/{self.model}",
+                    "generationConfig": {"responseModalities": ["TEXT"]},
+                    "inputAudioTranscription": {
+                        "languageCodes": [language] if language else []
+                    },
+                }
+            }
+            await ws.send(json.dumps(setup))
+
+            chunk = 3200  # 100 ms of 16 kHz / 16-bit mono
+            for i in range(0, len(pcm), chunk):
+                seg = pcm[i : i + chunk]
+                await ws.send(
+                    json.dumps(
+                        {
+                            "realtimeInput": {
+                                "audio": {
+                                    "data": base64.b64encode(seg).decode("ascii"),
+                                    "mimeType": "audio/pcm;rate=16000",
+                                }
+                            }
+                        }
+                    )
+                )
+                await asyncio.sleep(0.10)
+            await ws.send(
+                json.dumps({"realtimeInput": {"audioStreamEnd": True}})
+            )
+
+            parts: list[str] = []
+            deadline = asyncio.get_event_loop().time() + 20
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=2)
+                except asyncio.TimeoutError:
+                    if parts:
+                        break
+                    continue
+                data = json.loads(raw)
+                if "error" in data:
+                    raise RuntimeError(f"Gemini Live API error: {data['error']}")
+                sc = data.get("serverContent") or {}
+                it = sc.get("inputTranscription") or {}
+                text = (it.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+                if sc.get("generationComplete") or sc.get("turnComplete"):
+                    break
+            if not parts:
+                raise RuntimeError(
+                    "Gemini Live returned no transcript for this audio"
+                )
+            return " ".join(parts)
+
+    def transcribe_file(self, path: str, language: str | None = None) -> str:
+        with open(path, "rb") as f:
+            return self.transcribe(f.read(), language=language)
+
+
 def build_transcriber(
     provider: str,
     model: str | None = None,
-) -> GroqTranscriber | GeminiTranscriber | OpenRouterSttTranscriber:
+) -> GroqTranscriber | GeminiTranscriber | OpenRouterSttTranscriber | GeminiLiveTranscriber:
     """Return the transcriber for the given provider.
 
-    Providers: 'groq', 'gemini', 'gpt-transcribe'.
+    Providers: 'groq', 'gemini', 'gpt-transcribe', 'gemini-live'.
     """
     provider = provider.lower()
     if provider == "groq":
@@ -389,7 +538,9 @@ def build_transcriber(
         return GeminiTranscriber(model=model or DEFAULT_GEMINI_MODEL)
     if provider in ("gpt-transcribe", "gpttranscribe", "gpt"):
         return OpenRouterSttTranscriber(model=model or DEFAULT_GPT_TRANSCRIBE_MODEL)
+    if provider in ("gemini-live", "gemini-live-transcribe", "glive"):
+        return GeminiLiveTranscriber(model=model or DEFAULT_GEMINI_LIVE_MODEL)
     raise RuntimeError(
         f"Unknown provider: {provider!r} "
-        "(expected 'groq', 'gemini', or 'gpt-transcribe')"
+        "(expected 'groq', 'gemini', 'gemini-live', or 'gpt-transcribe')"
     )

@@ -43,6 +43,20 @@ def _load_openrouter_key() -> str:
     return key
 
 
+def _load_gemini_key() -> str:
+    load_dotenv()  # reads .env in CWD
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        sys.stderr.write(
+            "GEMINI_API_KEY not found.\n"
+            "Get a free key at https://aistudio.google.com/apikey, then either:\n"
+            "  echo 'GEMINI_API_KEY=...' > .env\n"
+            "  # or export GEMINI_API_KEY=...\n"
+        )
+        sys.exit(1)
+    return key
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="groq-dictate", description="Groq dictation app")
     p.add_argument("--once", action="store_true", help="Transcribe a single phrase and exit")
@@ -50,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--file", type=str, help="Transcribe an existing WAV file instead of mic")
     p.add_argument("--model", default=None, help="Overrides the model ID for the chosen provider")
     p.add_argument("--provider", default="gpt-transcribe",
-                   help="Transcription backend: gpt-transcribe | groq | gemini")
+                   help="Transcription backend: gpt-transcribe | groq | gemini | gemini-live")
     p.add_argument("--lang", default=None, help="Optional ISO-639-1 language code (e.g. en)")
     p.add_argument("--method", default="auto", help="Injection: auto|wtype|ydotool|xdotool")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
@@ -68,8 +82,12 @@ def main(argv: list[str] | None = None) -> None:
         provider = "gemini"
     elif provider in ("gpt-transcribe", "gpttranscribe", "gpt"):
         provider = "gpt-transcribe"
+    elif provider in ("gemini-live", "gemini-live-transcribe", "glive"):
+        provider = "gemini-live"
     if provider == "groq":
         _load_api_key()
+    elif provider == "gemini-live":
+        _load_gemini_key()
     else:
         _load_openrouter_key()
     transcriber = build_transcriber(provider, model=args.model)

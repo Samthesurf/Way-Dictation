@@ -64,6 +64,7 @@ PROVIDERS = [
     ("GPT Transcribe (paid)", "gpt-transcribe"),
     ("Groq Whisper (free)", "groq"),
     ("Gemini (OpenRouter)", "gemini"),
+    ("Gemini 3.5 Transcribe Live", "gemini-live"),
 ]
 LANGUAGES = [
     ("Auto-detect", ""),
@@ -1056,6 +1057,7 @@ class SettingsDialog(QtWidgets.QDialog):
         for row, (label, env_name) in enumerate((
             ("Groq API key", "GROQ_API_KEY"),
             ("OpenRouter API key", "OPENROUTER_API_KEY"),
+            ("Gemini API key", "GEMINI_API_KEY"),
         )):
             field = QtWidgets.QLineEdit()
             field.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
@@ -1124,8 +1126,9 @@ class SettingsDialog(QtWidgets.QDialog):
         grid2.addWidget(self.ontop_check, 3, 0, 1, 2)
         lay.addLayout(grid2)
         prov_note = QtWidgets.QLabel(
-            "GPT Transcribe and Gemini use the OpenRouter key; "
-            "Groq Whisper uses the Groq key.")
+            "GPT Transcribe and Gemini (OpenRouter) use the OpenRouter key; "
+            "Groq Whisper uses the Groq key; Gemini 3.5 Transcribe Live "
+            "uses the Gemini API key.")
         prov_note.setObjectName("hintLabel")
         prov_note.setWordWrap(True)
         lay.addWidget(prov_note)
